@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         自动刷新页面（高级增强版）
+// @name         网页自动刷新 Pro
 // @namespace    https://www.wuaishare.cn/
-// @version      1.1
-// @description  自动刷新页面，支持油猴菜单设置刷新时间，带右下角倒计时与控制按钮，支持暂停、重置。让网页自动定时刷新，解放双手！可自行设置刷新时间。
-// @author       逸轩
+// @version      1.2
+// @description  自动刷新页面：按网址分别设置刷新间隔；右下角可拖拽面板（记忆位置），倒计时/暂停/重置/设置；面板闲置后自动半透明，悬浮或点击恢复清晰。
+// @author       吾爱分享网
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_setValue
@@ -16,6 +16,7 @@
 
     const MIN_INTERVAL = 5;
     const key = 'urlRefreshMap';
+    const panelPosKey = 'autoRefreshPanelPos_v1';
     const currentUrl = location.href;
 
     let timeLeft = 0;
@@ -28,7 +29,7 @@
         if (config[currentUrl] && config[currentUrl] >= MIN_INTERVAL) {
             interval = config[currentUrl];
             timeLeft = interval;
-            createControlPanel();
+            await createControlPanel();
             countdown();
         }
     })();
@@ -72,8 +73,9 @@
         }
     }
 
-    function createControlPanel() {
+    async function createControlPanel() {
         const panel = document.createElement('div');
+        panel.id = 'autoRefreshProPanel';
         panel.style.cssText = `
             position: fixed;
             bottom: 10px;
@@ -86,19 +88,49 @@
             z-index: 99999;
             font-family: sans-serif;
             line-height: 1.8;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+            user-select: none;
+            transition: opacity 200ms ease;
+            opacity: 1;
         `;
         panel.innerHTML = `
-            ⏱️ 剩余：<span id="countdown">${formatTime(timeLeft)}</span><br/>
-            <button id="pauseBtn">⏸ 暂停</button>
-            <button id="resetBtn">🔁 重置</button>
-            <button id="setBtn">⚙ 设置</button>
+            <div id="dragHandle" style="
+                display:flex;
+                align-items:center;
+                justify-content:space-between;
+                gap:10px;
+                margin-bottom:6px;
+                cursor: move;
+                font-weight: 600;
+            ">
+                <span>⏱️ 自动刷新</span>
+                <span style="opacity:.8;font-weight:400;font-size:12px;">拖动这里</span>
+            </div>
+            <div style="margin-bottom:6px;">
+                剩余：<span id="countdown">${formatTime(timeLeft)}</span>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button id="pauseBtn" style="cursor:pointer;">⏸ 暂停</button>
+                <button id="resetBtn" style="cursor:pointer;">🔁 重置</button>
+                <button id="setBtn" style="cursor:pointer;">⚙ 设置</button>
+            </div>
         `;
         document.body.appendChild(panel);
+
+        // 恢复拖动位置（全局记忆；不跟随具体网址）
+        const savedPos = await loadPanelPos();
+        if (savedPos && Number.isFinite(savedPos.left) && Number.isFinite(savedPos.top)) {
+            panel.style.left = `${savedPos.left}px`;
+            panel.style.top = `${savedPos.top}px`;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        }
 
         const countdownEl = panel.querySelector('#countdown');
         const pauseBtn = panel.querySelector('#pauseBtn');
         const resetBtn = panel.querySelector('#resetBtn');
         const setBtn = panel.querySelector('#setBtn');
+        const dragHandle = panel.querySelector('#dragHandle');
 
         setInterval(() => {
             countdownEl.textContent = formatTime(timeLeft);
@@ -122,6 +154,80 @@
                 alert('❌ 输入无效，必须为数字且不小于 ' + MIN_INTERVAL);
             }
         };
+
+        // 闲置后半透明；悬浮/点击恢复
+        const FADE_DELAY_MS = 3000;
+        const FADE_OPACITY = 0.35;
+        let fadeTimer = null;
+
+        function setOpaque(isOpaque) {
+            panel.style.opacity = isOpaque ? '1' : String(FADE_OPACITY);
+        }
+
+        function scheduleFade() {
+            if (fadeTimer) clearTimeout(fadeTimer);
+            fadeTimer = setTimeout(() => setOpaque(false), FADE_DELAY_MS);
+        }
+
+        function wake() {
+            setOpaque(true);
+            scheduleFade();
+        }
+
+        panel.addEventListener('mouseenter', wake, true);
+        panel.addEventListener('mousedown', wake, true);
+        panel.addEventListener('touchstart', wake, { passive: true });
+        panel.addEventListener('mouseleave', scheduleFade, true);
+        scheduleFade();
+
+        // 可拖拽（仅拖动头部，避免误点按钮）
+        let dragging = false;
+        let startOffsetX = 0;
+        let startOffsetY = 0;
+
+        function clamp(n, min, max) {
+            return Math.max(min, Math.min(max, n));
+        }
+
+        dragHandle.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 && e.pointerType !== 'touch') return;
+            wake();
+            dragging = true;
+            panel.setPointerCapture?.(e.pointerId);
+
+            const rect = panel.getBoundingClientRect();
+            startOffsetX = e.clientX - rect.left;
+            startOffsetY = e.clientY - rect.top;
+
+            panel.style.left = `${rect.left}px`;
+            panel.style.top = `${rect.top}px`;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+            e.preventDefault();
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            const maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
+            const maxTop = Math.max(0, window.innerHeight - panel.offsetHeight);
+            const left = clamp(e.clientX - startOffsetX, 0, maxLeft);
+            const top = clamp(e.clientY - startOffsetY, 0, maxTop);
+            panel.style.left = `${left}px`;
+            panel.style.top = `${top}px`;
+        }, true);
+
+        window.addEventListener('pointerup', (e) => {
+            if (!dragging) return;
+            dragging = false;
+            try {
+                const left = parseFloat(panel.style.left);
+                const top = parseFloat(panel.style.top);
+                if (Number.isFinite(left) && Number.isFinite(top)) {
+                    GM_setValue(panelPosKey, JSON.stringify({ left, top }));
+                }
+            } catch { /* ignore */ }
+            panel.releasePointerCapture?.(e.pointerId);
+        }, true);
     }
 
     async function loadConfig() {
@@ -130,6 +236,16 @@
             return JSON.parse(raw);
         } catch {
             return {};
+        }
+    }
+
+    async function loadPanelPos() {
+        const raw = await GM_getValue(panelPosKey, '');
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw);
+        } catch {
+            return null;
         }
     }
 

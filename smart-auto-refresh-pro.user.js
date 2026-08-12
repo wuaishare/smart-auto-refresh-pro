@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页自动刷新 Pro
 // @namespace    https://www.wuaishare.cn/
-// @version      1.3
-// @description  自动刷新页面：支持网站范围或精准网址规则、倒计时/暂停/重置/设置、可拖拽面板与位置记忆；采用绝对时间计时，后台标签页也能保持更准确的刷新节奏。
+// @version      1.3.1
+// @description  自动刷新页面：支持网站范围或精准网址规则、统一设置管理、Mini Timer、倒计时/暂停/重置、可拖拽面板与位置记忆；采用绝对时间计时。
 // @author       吾爱分享网
 // @homepageURL  https://github.com/wuaishare/smart-auto-refresh-pro
 // @supportURL   https://github.com/wuaishare/smart-auto-refresh-pro/issues
@@ -23,8 +23,7 @@
     const MIN_INTERVAL = 1;
     const HIGH_FREQUENCY_WARNING_BELOW = 5;
     const DEFAULT_INTERVAL = 60;
-    const FADE_DELAY_MS = 3000;
-    const FADE_OPACITY = 0.35;
+    const COLLAPSE_DELAY_MS = 5000;
 
     let activeRule = null;
     let intervalSeconds = 0;
@@ -34,15 +33,24 @@
     let countdownTimer = null;
     let countdownEl = null;
     let pauseBtn = null;
+    let miniTimeEl = null;
+    let miniIconEl = null;
+    let miniButtonEl = null;
+    let uiHost = null;
+    let uiRoot = null;
+    let panelEl = null;
+    let panelMode = 'expanded';
+    let collapseTimer = null;
+    let isDragging = false;
+    let settingsDialogOpen = false;
+    let hasCustomPanelPosition = false;
     const originalTitle = document.title;
 
     void init().catch((error) => {
         console.error('[网页自动刷新 Pro] 初始化失败：', error);
     });
 
-    GM_registerMenuCommand('🛠 设置当前页面刷新间隔', () => runSafely(configureCurrentPage));
-    GM_registerMenuCommand('❌ 关闭当前页面自动刷新', () => runSafely(disableCurrentPage));
-    GM_registerMenuCommand('🗑 删除当前网站范围规则', () => runSafely(removeCurrentSiteRule));
+    GM_registerMenuCommand('⚙ 设置 / 管理自动刷新', () => runSafely(openSettingsDialog));
 
     async function init() {
         const config = await loadConfig();
@@ -63,148 +71,279 @@
         }
     }
 
-    async function configureCurrentPage() {
+    async function openSettingsDialog() {
         const currentUrl = location.href;
         const currentHost = location.hostname;
         const config = await loadConfig();
-        const currentRule = resolveRule(config, currentUrl, currentHost);
-        const fallbackInterval = currentRule?.seconds
-            || config.exact[currentUrl]
-            || config.site[currentHost]
-            || DEFAULT_INTERVAL;
+        const state = getSettingsState(config, currentUrl, currentHost);
+        const root = ensureUiSurface();
+        const previousFocus = root.activeElement || document.activeElement;
 
-        const seconds = askInterval(fallbackInterval);
-        if (seconds === null) return;
+        root.querySelector('#sarSettingsBackdrop')?.remove();
+        settingsDialogOpen = true;
+        clearCollapseTimer();
+        if (panelEl) setPanelMode('expanded');
 
-        const scope = askScope(currentRule?.scope || 'exact', currentHost);
-        if (!scope) return;
+        const backdrop = document.createElement('div');
+        backdrop.id = 'sarSettingsBackdrop';
+        backdrop.className = 'sar-dialog-backdrop';
+        backdrop.innerHTML = `
+            <section class="sar-dialog" role="dialog" aria-modal="true" aria-labelledby="sarDialogTitle">
+                <div class="sar-dialog-head">
+                    <div>
+                        <h2 id="sarDialogTitle">设置 / 管理自动刷新</h2>
+                        <p id="sarDialogStatus" class="sar-dialog-status"></p>
+                    </div>
+                    <button class="sar-icon-btn" id="sarDialogClose" type="button" aria-label="关闭设置">×</button>
+                </div>
 
-        delete config.disabled[currentUrl];
+                <form id="sarSettingsForm" novalidate>
+                    <label class="sar-field">
+                        <span class="sar-label">刷新间隔</span>
+                        <span class="sar-number-wrap">
+                            <input id="sarIntervalInput" type="text" inputmode="numeric" autocomplete="off" value="${state.seconds}">
+                            <span>秒</span>
+                        </span>
+                    </label>
 
-        let note = '';
-        if (scope === 'site') {
-            config.site[currentHost] = seconds;
+                    <fieldset class="sar-fieldset">
+                        <legend>适用范围</legend>
+                        <label class="sar-radio-card">
+                            <input type="radio" name="sarScope" value="exact" ${state.scope === 'exact' ? 'checked' : ''}>
+                            <span><strong>精准网址</strong><small>仅当前完整 URL，优先级最高</small></span>
+                        </label>
+                        <label class="sar-radio-card">
+                            <input type="radio" name="sarScope" value="site" ${state.scope === 'site' ? 'checked' : ''}>
+                            <span><strong>网站范围</strong><small>${currentHost} 下的页面默认使用此规则</small></span>
+                        </label>
+                    </fieldset>
 
-            if (isValidInterval(config.exact[currentUrl])) {
-                const removeExact = confirm(
-                    `当前精准网址已有 ${config.exact[currentUrl]} 秒规则，它会优先于网站范围规则。\n\n` +
-                    '点击“确定”：删除当前精准规则，让新的网站规则立即生效。\n' +
-                    '点击“取消”：保留精准规则，仅更新网站默认规则。'
-                );
-                if (removeExact) {
-                    delete config.exact[currentUrl];
-                } else {
-                    note = `\nℹ️ 当前页面仍会优先使用精准网址规则（${config.exact[currentUrl]} 秒）。`;
+                    <div id="sarOverrideChoice" class="sar-inline-card" hidden>
+                        <strong>当前页面已有精准网址规则</strong>
+                        <p>精准规则会优先于网站范围规则。请选择保存网站规则后如何处理当前精准规则。</p>
+                        <label><input type="radio" name="sarOverride" value="keep" checked> 保留精准规则</label>
+                        <label><input type="radio" name="sarOverride" value="remove"> 删除精准规则，让网站规则立即生效</label>
+                    </div>
+
+                    <div id="sarDialogMessage" class="sar-message" hidden></div>
+
+                    <button class="sar-primary-btn" id="sarSaveBtn" type="submit">保存设置</button>
+                </form>
+
+                <div id="sarManageActions" class="sar-manage-actions">
+                    ${state.hasExactRule || (state.hasSiteRule && !state.isDisabled)
+                        ? '<button class="sar-secondary-btn" id="sarDisableBtn" type="button">停用当前页面</button>'
+                        : ''}
+                    ${state.hasSiteRule
+                        ? '<button class="sar-danger-btn" id="sarDeleteSiteBtn" type="button">删除网站范围规则</button>'
+                        : ''}
+                </div>
+
+                <div id="sarActionConfirm" class="sar-action-confirm" hidden>
+                    <p id="sarActionConfirmText"></p>
+                    <div class="sar-confirm-actions">
+                        <button class="sar-danger-btn" id="sarActionConfirmYes" type="button">确认</button>
+                        <button class="sar-secondary-btn" id="sarActionConfirmNo" type="button">取消</button>
+                    </div>
+                </div>
+            </section>
+        `;
+        root.appendChild(backdrop);
+
+        const dialog = backdrop.querySelector('.sar-dialog');
+        const form = backdrop.querySelector('#sarSettingsForm');
+        const intervalInput = backdrop.querySelector('#sarIntervalInput');
+        const saveBtn = backdrop.querySelector('#sarSaveBtn');
+        const messageEl = backdrop.querySelector('#sarDialogMessage');
+        const statusEl = backdrop.querySelector('#sarDialogStatus');
+        const overrideChoice = backdrop.querySelector('#sarOverrideChoice');
+        const closeBtn = backdrop.querySelector('#sarDialogClose');
+        const disableBtn = backdrop.querySelector('#sarDisableBtn');
+        const deleteSiteBtn = backdrop.querySelector('#sarDeleteSiteBtn');
+        const actionConfirm = backdrop.querySelector('#sarActionConfirm');
+        const actionConfirmText = backdrop.querySelector('#sarActionConfirmText');
+        const actionConfirmYes = backdrop.querySelector('#sarActionConfirmYes');
+        const actionConfirmNo = backdrop.querySelector('#sarActionConfirmNo');
+        let pendingHighFrequencyValue = null;
+
+        statusEl.textContent = describeSettingsStatus(state);
+
+        const setMessage = (text, kind = 'error') => {
+            messageEl.textContent = text;
+            messageEl.dataset.kind = kind;
+            messageEl.hidden = !text;
+        };
+
+        const resetPendingSave = () => {
+            pendingHighFrequencyValue = null;
+            saveBtn.textContent = '保存设置';
+            setMessage('');
+        };
+
+        const hideActionConfirm = () => {
+            actionConfirm.hidden = true;
+            actionConfirmYes.onclick = null;
+        };
+
+        const showActionConfirm = (text, onConfirm) => {
+            setMessage('');
+            actionConfirmText.textContent = text;
+            actionConfirm.hidden = false;
+            actionConfirmYes.onclick = async () => {
+                actionConfirmYes.disabled = true;
+                try {
+                    await onConfirm();
+                } catch (error) {
+                    actionConfirmYes.disabled = false;
+                    console.error('[网页自动刷新 Pro] 管理操作失败：', error);
+                    setMessage('操作失败，请稍后重试。');
                 }
+            };
+            actionConfirmNo.focus();
+        };
+
+        const updateOverrideChoice = () => {
+            const scope = form.elements.sarScope.value;
+            overrideChoice.hidden = !(scope === 'site' && state.hasExactRule);
+        };
+
+        const closeDialog = () => {
+            if (!backdrop.isConnected) return;
+            backdrop.remove();
+            settingsDialogOpen = false;
+            if (panelEl) scheduleCollapse();
+            if (previousFocus && typeof previousFocus.focus === 'function' && previousFocus.isConnected) {
+                previousFocus.focus();
             }
-        } else {
-            config.exact[currentUrl] = seconds;
-        }
+        };
 
-        await saveConfig(config);
-        const scopeLabel = scope === 'site' ? `网站范围（${currentHost}）` : '当前精准网址';
-        alert(`✅ 已将 ${scopeLabel} 设置为每 ${seconds} 秒刷新一次。${note}`);
-        location.reload();
-    }
+        const focusableElements = () => [...dialog.querySelectorAll(
+            'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )].filter((element) => !element.hidden && element.offsetParent !== null);
 
-    async function disableCurrentPage() {
-        const currentUrl = location.href;
-        const currentHost = location.hostname;
-        const config = await loadConfig();
-        const hasExactRule = isValidInterval(config.exact[currentUrl]);
-        const hasSiteRule = isValidInterval(config.site[currentHost]);
-        const isAlreadyExcluded = config.disabled[currentUrl] === true;
+        const handleKeydown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                if (!actionConfirm.hidden) {
+                    hideActionConfirm();
+                    return;
+                }
+                closeDialog();
+                return;
+            }
 
-        if (!hasExactRule && !hasSiteRule) {
-            alert(isAlreadyExcluded ? 'ℹ️ 当前页面已经处于关闭状态。' : 'ℹ️ 当前页面没有自动刷新规则。');
-            return;
-        }
+            if (event.key !== 'Tab') return;
+            const focusable = focusableElements();
+            if (focusable.length === 0) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            const activeElement = root.activeElement || document.activeElement;
+            if (event.shiftKey && activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
 
-        if (hasExactRule) {
-            delete config.exact[currentUrl];
-        }
+        form.addEventListener('change', (event) => {
+            if (event.target.name === 'sarScope') updateOverrideChoice();
+            resetPendingSave();
+        });
 
-        if (hasSiteRule) {
-            config.disabled[currentUrl] = true;
-        } else {
-            delete config.disabled[currentUrl];
-        }
+        intervalInput.addEventListener('input', resetPendingSave);
 
-        await saveConfig(config);
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            hideActionConfirm();
 
-        const detail = hasSiteRule
-            ? '网站范围规则会继续作用于同域名的其他页面；当前精准网址已加入排除列表。'
-            : '当前精准网址规则已删除。';
-        alert(`✅ 已关闭当前页面自动刷新。\n${detail}`);
-        location.reload();
-    }
+            const seconds = parseIntervalInput(intervalInput.value);
+            if (seconds === null) {
+                saveBtn.textContent = '保存设置';
+                setMessage(`刷新时间必须是十进制整数，且不小于 ${MIN_INTERVAL} 秒。`);
+                intervalInput.focus();
+                return;
+            }
 
-    async function removeCurrentSiteRule() {
-        const currentUrl = location.href;
-        const currentHost = location.hostname;
-        const config = await loadConfig();
+            if (seconds < HIGH_FREQUENCY_WARNING_BELOW && pendingHighFrequencyValue !== seconds) {
+                pendingHighFrequencyValue = seconds;
+                setMessage(`${seconds} 秒属于高频刷新，可能增加服务器负载并触发限流或风控。确认无误后再次点击“保存设置”。`, 'warning');
+                saveBtn.textContent = '确认高频并保存';
+                return;
+            }
 
-        if (!isValidInterval(config.site[currentHost])) {
-            alert('ℹ️ 当前网站没有网站范围刷新规则。');
-            return;
-        }
+            const scope = form.elements.sarScope.value;
+            const overrideDecision = form.elements.sarOverride?.value || 'keep';
+            applyRuleUpdate(config, {
+                url: currentUrl,
+                host: currentHost,
+                seconds,
+                scope,
+                removeExactOverride: scope === 'site' && overrideDecision === 'remove'
+            });
 
-        delete config.site[currentHost];
-        const clearedExclusions = clearDisabledRulesForHost(config, currentHost);
-        await saveConfig(config);
+            saveBtn.disabled = true;
+            setMessage('正在保存设置…', 'success');
+            try {
+                await saveConfig(config);
+                setMessage('设置已保存，正在应用…', 'success');
+                location.reload();
+            } catch (error) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = '保存设置';
+                console.error('[网页自动刷新 Pro] 设置保存失败：', error);
+                setMessage('设置保存失败，请稍后重试。');
+            }
+        });
 
-        const exactStillActive = isValidInterval(config.exact[currentUrl]);
-        const exclusionNote = clearedExclusions > 0
-            ? `，并清理了 ${clearedExclusions} 条该网站的页面排除记录`
-            : '';
-        const exactNote = exactStillActive
-            ? '\nℹ️ 当前页面仍有精准网址规则，因此会继续自动刷新。'
-            : '';
+        closeBtn.addEventListener('click', closeDialog);
+        backdrop.addEventListener('pointerdown', (event) => {
+            if (event.target === backdrop) closeDialog();
+        });
+        backdrop.addEventListener('keydown', handleKeydown);
+        actionConfirmNo.addEventListener('click', hideActionConfirm);
 
-        alert(`✅ 已删除 ${currentHost} 的网站范围规则${exclusionNote}。${exactNote}`);
-        location.reload();
-    }
-
-    function askInterval(defaultValue) {
-        const input = prompt(
-            `请输入刷新间隔时间（单位：秒，整数且 ≥ ${MIN_INTERVAL}）：`,
-            String(defaultValue)
-        );
-        if (input === null) return null;
-
-        const value = parseIntervalInput(input);
-        if (value === null) {
-            alert(`❌ 无效输入。刷新时间必须是十进制整数，且不小于 ${MIN_INTERVAL} 秒。`);
-            return null;
-        }
-
-        if (value < HIGH_FREQUENCY_WARNING_BELOW) {
-            const accepted = confirm(
-                `⚠️ ${value} 秒属于高频刷新，可能增加服务器负载并触发站点限流或风控。\n\n` +
-                '仅在你确认目标网站允许高频刷新时使用。是否继续？'
+        disableBtn?.addEventListener('click', () => {
+            showActionConfirm(
+                state.hasSiteRule
+                    ? '确认停用当前页面？网站范围规则仍会继续作用于同站其他页面。'
+                    : '确认停用当前页面？当前精准网址规则将被删除。',
+                async () => {
+                    disableUrl(config, { url: currentUrl, host: currentHost });
+                    await saveConfig(config);
+                    location.reload();
+                }
             );
-            if (!accepted) return null;
-        }
+        });
 
-        return value;
+        deleteSiteBtn?.addEventListener('click', () => {
+            showActionConfirm(
+                `确认删除 ${currentHost} 的网站范围规则？该网站已有的页面排除记录也会一并清理。`,
+                async () => {
+                    removeSiteRule(config, { host: currentHost });
+                    await saveConfig(config);
+                    location.reload();
+                }
+            );
+        });
+
+        updateOverrideChoice();
+        intervalInput.focus();
+        intervalInput.select();
     }
 
-    function askScope(defaultScope, currentHost) {
-        const defaultChoice = defaultScope === 'exact' ? '2' : '1';
-        const choice = prompt(
-            '请选择刷新适用范围（输入数字）：\n\n' +
-            `1. 网站范围：${currentHost} 下的页面默认使用此规则\n` +
-            '2. 精准网址（更安全）：仅当前完整 URL 使用此规则\n\n' +
-            '精准网址规则始终优先于网站范围规则。',
-            defaultChoice
-        );
-
-        if (choice === null) return null;
-        if (choice.trim() === '1') return 'site';
-        if (choice.trim() === '2') return 'exact';
-
-        alert('❌ 无效选择，请输入 1 或 2。');
-        return null;
+    function describeSettingsStatus(state) {
+        if (state.effectiveScope === 'exact') {
+            return `当前状态：精准网址 · 每 ${state.seconds} 秒刷新`;
+        }
+        if (state.effectiveScope === 'site') {
+            return `当前状态：网站范围 · 每 ${state.seconds} 秒刷新`;
+        }
+        if (state.isDisabled && state.hasSiteRule) {
+            return '当前状态：此页面已停用，网站范围规则仍存在';
+        }
+        return '当前状态：未启用自动刷新';
     }
 
     function startCountdown(seconds) {
@@ -269,224 +408,501 @@
 
     function updateCountdownDisplay(remainingMs) {
         const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
-        const formatted = formatTime(remainingSeconds);
+        const presentation = getPanelPresentation(panelMode, isPaused, remainingSeconds);
 
-        if (countdownEl) {
-            countdownEl.textContent = formatted;
-        }
-        if (pauseBtn) {
-            pauseBtn.textContent = isPaused ? '▶ 继续' : '⏸ 暂停';
-        }
+        if (countdownEl) countdownEl.textContent = presentation.time;
+        if (pauseBtn) pauseBtn.textContent = isPaused ? '▶ 继续' : '⏸ 暂停';
+        if (miniTimeEl) miniTimeEl.textContent = presentation.time;
+        if (miniIconEl) miniIconEl.textContent = presentation.icon;
+        if (miniButtonEl) miniButtonEl.setAttribute('aria-label', presentation.label);
 
         document.title = isPaused
-            ? `[已暂停 ${formatted}] ${originalTitle}`
-            : `[${formatted}] ${originalTitle}`;
+            ? `[已暂停 ${presentation.time}] ${originalTitle}`
+            : `[${presentation.time}] ${originalTitle}`;
     }
 
-    async function createControlPanel() {
-        const host = document.createElement('div');
-        host.id = 'autoRefreshProPanel';
-        host.style.cssText = [
+    function ensureUiSurface() {
+        if (uiHost?.isConnected && uiRoot) return uiRoot;
+
+        uiHost = document.createElement('div');
+        uiHost.id = 'autoRefreshProPanel';
+        uiHost.style.cssText = [
             'position:fixed',
             'right:10px',
             'bottom:10px',
-            'z-index:2147483647',
-            'opacity:1',
-            'transition:opacity 200ms ease'
+            'z-index:2147483647'
         ].join(';');
 
-        const root = typeof host.attachShadow === 'function'
-            ? host.attachShadow({ mode: 'open' })
-            : host;
-        const scopeLabel = activeRule?.scope === 'site' ? '网站范围' : '精准网址';
+        uiRoot = typeof uiHost.attachShadow === 'function'
+            ? uiHost.attachShadow({ mode: 'open' })
+            : uiHost;
 
-        root.innerHTML = `
-            <style>
-                .sar-panel,
-                .sar-panel * {
-                    box-sizing: border-box;
-                }
-                .sar-panel {
-                    width: max-content;
-                    max-width: calc(100vw - 20px);
-                    padding: 10px;
-                    border: 1px solid rgba(255,255,255,.12);
-                    border-radius: 9px;
-                    background: rgba(20,20,24,.88);
-                    color: #fff;
-                    box-shadow: 0 8px 24px rgba(0,0,0,.28);
-                    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                    user-select: none;
-                    -webkit-font-smoothing: antialiased;
-                }
-                .sar-header {
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    gap: 10px;
-                    margin-bottom: 7px;
-                    cursor: move;
-                    touch-action: none;
-                }
-                .sar-title {
-                    display: flex;
-                    align-items: center;
-                    gap: 6px;
-                    min-width: 0;
-                    font-weight: 650;
-                    white-space: nowrap;
-                }
-                .sar-badge {
-                    padding: 1px 5px;
-                    border: 1px solid rgba(255,255,255,.16);
-                    border-radius: 999px;
-                    background: rgba(255,255,255,.08);
-                    font-size: 11px;
-                    font-weight: 500;
-                    opacity: .9;
-                }
-                .sar-drag-tip {
-                    font-size: 11px;
-                    white-space: nowrap;
-                    opacity: .55;
-                }
-                .sar-time {
-                    margin-bottom: 7px;
-                    font-variant-numeric: tabular-nums;
-                }
-                .sar-time strong {
-                    font-size: 15px;
-                    font-weight: 650;
-                }
-                .sar-actions {
-                    display: flex;
-                    gap: 6px;
-                    flex-wrap: wrap;
-                }
-                .sar-btn {
-                    all: unset;
-                    box-sizing: border-box;
-                    padding: 4px 8px;
-                    border: 1px solid rgba(255,255,255,.16);
-                    border-radius: 6px;
-                    background: rgba(255,255,255,.08);
-                    color: #fff;
-                    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                    cursor: pointer;
-                }
-                .sar-btn:hover,
-                .sar-btn:focus-visible {
-                    background: rgba(255,255,255,.16);
-                    outline: none;
-                }
-            </style>
-            <div class="sar-panel" role="region" aria-label="自动刷新控制面板">
-                <div class="sar-header" id="dragHandle">
-                    <div class="sar-title">
-                        <span>⏱ 自动刷新</span>
-                        <span class="sar-badge">${scopeLabel}</span>
+        const style = document.createElement('style');
+        style.textContent = `
+            *, *::before, *::after { box-sizing: border-box; }
+            button, input { font: inherit; }
+            button { -webkit-tap-highlight-color: transparent; }
+
+            .sar-panel {
+                width: max-content;
+                max-width: calc(100vw - 20px);
+                color: #fff;
+                font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                user-select: none;
+                -webkit-font-smoothing: antialiased;
+            }
+            .sar-expanded {
+                padding: 10px;
+                border: 1px solid rgba(255,255,255,.12);
+                border-radius: 10px;
+                background: rgba(20,20,24,.9);
+                box-shadow: 0 8px 24px rgba(0,0,0,.28);
+                transform-origin: bottom right;
+                animation: sarIn 150ms ease-out;
+            }
+            .sar-mini {
+                display: none;
+                align-items: center;
+                gap: 6px;
+                min-height: 32px;
+                padding: 6px 9px;
+                border: 1px solid rgba(255,255,255,.1);
+                border-radius: 999px;
+                background: rgba(20,20,24,.76);
+                color: #fff;
+                box-shadow: 0 4px 14px rgba(0,0,0,.2);
+                font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                font-variant-numeric: tabular-nums;
+                cursor: pointer;
+                backdrop-filter: blur(8px);
+                -webkit-backdrop-filter: blur(8px);
+            }
+            .sar-mini:hover,
+            .sar-mini:focus-visible {
+                background: rgba(20,20,24,.9);
+                outline: 2px solid rgba(120,180,255,.8);
+                outline-offset: 2px;
+            }
+            .sar-panel[data-mode="mini"] .sar-expanded { display: none; }
+            .sar-panel[data-mode="mini"] .sar-mini { display: flex; }
+            .sar-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                margin-bottom: 7px;
+                cursor: move;
+                touch-action: none;
+            }
+            .sar-title {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                min-width: 0;
+                font-weight: 650;
+                white-space: nowrap;
+            }
+            .sar-badge {
+                padding: 1px 6px;
+                border: 1px solid rgba(255,255,255,.16);
+                border-radius: 999px;
+                background: rgba(255,255,255,.08);
+                font-size: 11px;
+                font-weight: 500;
+                opacity: .9;
+            }
+            .sar-drag-tip {
+                font-size: 11px;
+                white-space: nowrap;
+                opacity: .55;
+            }
+            .sar-time {
+                margin-bottom: 7px;
+                font-variant-numeric: tabular-nums;
+            }
+            .sar-time strong {
+                font-size: 15px;
+                font-weight: 650;
+            }
+            .sar-actions {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+            }
+            .sar-btn,
+            .sar-primary-btn,
+            .sar-secondary-btn,
+            .sar-danger-btn,
+            .sar-icon-btn {
+                border: 0;
+                border-radius: 7px;
+                cursor: pointer;
+            }
+            .sar-btn {
+                padding: 5px 8px;
+                border: 1px solid rgba(255,255,255,.14);
+                background: rgba(255,255,255,.08);
+                color: #fff;
+                font-size: 12px;
+            }
+            .sar-btn:hover,
+            .sar-btn:focus-visible {
+                background: rgba(255,255,255,.16);
+                outline: 2px solid rgba(120,180,255,.8);
+                outline-offset: 1px;
+            }
+
+            .sar-dialog-backdrop {
+                position: fixed;
+                inset: 0;
+                z-index: 10;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+                background: rgba(0,0,0,.34);
+                backdrop-filter: blur(2px);
+                -webkit-backdrop-filter: blur(2px);
+                font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                color: #18181b;
+            }
+            .sar-dialog {
+                width: min(430px, calc(100vw - 24px));
+                max-height: min(720px, calc(100vh - 24px));
+                overflow: auto;
+                padding: 18px;
+                border: 1px solid rgba(0,0,0,.08);
+                border-radius: 16px;
+                background: #fff;
+                box-shadow: 0 24px 64px rgba(0,0,0,.26);
+                animation: sarDialogIn 170ms ease-out;
+            }
+            .sar-dialog-head {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 14px;
+                margin-bottom: 16px;
+            }
+            .sar-dialog h2 {
+                margin: 0;
+                color: #111827;
+                font-size: 18px;
+                line-height: 1.3;
+            }
+            .sar-dialog-status {
+                margin: 5px 0 0;
+                color: #6b7280;
+                font-size: 12px;
+            }
+            .sar-icon-btn {
+                width: 30px;
+                height: 30px;
+                flex: 0 0 30px;
+                background: #f3f4f6;
+                color: #4b5563;
+                font-size: 20px;
+                line-height: 1;
+            }
+            .sar-icon-btn:hover,
+            .sar-icon-btn:focus-visible {
+                background: #e5e7eb;
+                outline: 2px solid #93c5fd;
+            }
+            .sar-field {
+                display: grid;
+                gap: 7px;
+                margin-bottom: 16px;
+            }
+            .sar-label,
+            .sar-fieldset legend {
+                color: #374151;
+                font-size: 13px;
+                font-weight: 650;
+            }
+            .sar-number-wrap {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .sar-number-wrap input {
+                width: 100%;
+                min-width: 0;
+                height: 40px;
+                padding: 0 11px;
+                border: 1px solid #d1d5db;
+                border-radius: 9px;
+                background: #fff;
+                color: #111827;
+                font-variant-numeric: tabular-nums;
+                outline: none;
+            }
+            .sar-number-wrap input:focus {
+                border-color: #60a5fa;
+                box-shadow: 0 0 0 3px rgba(96,165,250,.18);
+            }
+            .sar-number-wrap > span { color: #6b7280; }
+            .sar-fieldset {
+                display: grid;
+                gap: 8px;
+                margin: 0 0 16px;
+                padding: 0;
+                border: 0;
+            }
+            .sar-fieldset legend { margin-bottom: 8px; }
+            .sar-radio-card {
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+                padding: 10px 11px;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                cursor: pointer;
+            }
+            .sar-radio-card:has(input:checked) {
+                border-color: #60a5fa;
+                background: #eff6ff;
+            }
+            .sar-radio-card input { margin-top: 3px; }
+            .sar-radio-card span { display: grid; gap: 2px; }
+            .sar-radio-card strong { color: #1f2937; font-size: 13px; }
+            .sar-radio-card small { color: #6b7280; font-size: 11px; }
+            .sar-inline-card,
+            .sar-action-confirm {
+                margin-bottom: 14px;
+                padding: 11px;
+                border: 1px solid #fde68a;
+                border-radius: 10px;
+                background: #fffbeb;
+                color: #78350f;
+                font-size: 12px;
+            }
+            .sar-inline-card p,
+            .sar-action-confirm p { margin: 5px 0 8px; }
+            .sar-inline-card label { display: block; margin-top: 6px; }
+            .sar-message {
+                margin-bottom: 12px;
+                padding: 9px 10px;
+                border-radius: 9px;
+                background: #fef2f2;
+                color: #b91c1c;
+                font-size: 12px;
+            }
+            .sar-message[data-kind="warning"] { background: #fffbeb; color: #92400e; }
+            .sar-message[data-kind="success"] { background: #ecfdf5; color: #047857; }
+            .sar-primary-btn,
+            .sar-secondary-btn,
+            .sar-danger-btn {
+                min-height: 38px;
+                padding: 0 12px;
+                font-weight: 650;
+            }
+            .sar-primary-btn {
+                width: 100%;
+                background: #2563eb;
+                color: #fff;
+            }
+            .sar-primary-btn:hover,
+            .sar-primary-btn:focus-visible { background: #1d4ed8; outline: 2px solid #93c5fd; outline-offset: 2px; }
+            .sar-primary-btn:disabled { cursor: default; opacity: .6; }
+            .sar-manage-actions {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px;
+                margin-top: 14px;
+                padding-top: 14px;
+                border-top: 1px solid #e5e7eb;
+            }
+            .sar-manage-actions:empty { display: none; }
+            .sar-secondary-btn { background: #f3f4f6; color: #374151; }
+            .sar-secondary-btn:hover,
+            .sar-secondary-btn:focus-visible { background: #e5e7eb; outline: 2px solid #bfdbfe; }
+            .sar-danger-btn { background: #fef2f2; color: #b91c1c; }
+            .sar-danger-btn:hover,
+            .sar-danger-btn:focus-visible { background: #fee2e2; outline: 2px solid #fecaca; }
+            .sar-action-confirm { margin-top: 12px; margin-bottom: 0; border-color: #fecaca; background: #fef2f2; color: #7f1d1d; }
+            .sar-confirm-actions { display: flex; gap: 8px; }
+
+            @keyframes sarIn { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: scale(1); } }
+            @keyframes sarDialogIn { from { opacity: 0; transform: translateY(5px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+            @media (max-width: 600px) {
+                .sar-dialog-backdrop { align-items: flex-end; padding: 12px; }
+                .sar-dialog { width: 100%; max-height: calc(100vh - 24px); border-radius: 16px; }
+                .sar-manage-actions { grid-template-columns: 1fr; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .sar-expanded, .sar-dialog { animation: none; }
+            }
+        `;
+
+        const mount = document.createElement('div');
+        mount.id = 'sarMount';
+        uiRoot.appendChild(style);
+        uiRoot.appendChild(mount);
+        (document.body || document.documentElement).appendChild(uiHost);
+        return uiRoot;
+    }
+
+    function clearCollapseTimer() {
+        if (collapseTimer !== null) {
+            clearTimeout(collapseTimer);
+            collapseTimer = null;
+        }
+    }
+
+    function isPanelFocused() {
+        const activeElement = uiRoot?.activeElement || document.activeElement;
+        return Boolean(panelEl && activeElement && panelEl.contains(activeElement));
+    }
+
+    function setPanelMode(mode) {
+        if (!panelEl) return;
+        panelMode = mode === 'mini' ? 'mini' : 'expanded';
+        panelEl.dataset.mode = panelMode;
+
+        if (panelMode === 'expanded' && hasCustomPanelPosition && uiHost) {
+            const rect = uiHost.getBoundingClientRect();
+            setPanelPosition(uiHost, rect.left, rect.top);
+        }
+    }
+
+    function scheduleCollapse() {
+        clearCollapseTimer();
+        if (!panelEl || settingsDialogOpen || isDragging) return;
+
+        collapseTimer = setTimeout(() => {
+            collapseTimer = null;
+            if (settingsDialogOpen || isDragging || isPanelFocused() || panelEl.matches(':hover')) return;
+            setPanelMode('mini');
+        }, COLLAPSE_DELAY_MS);
+    }
+
+    async function createControlPanel() {
+        const root = ensureUiSurface();
+        const mount = root.querySelector('#sarMount');
+        const scopeLabel = activeRule?.scope === 'site' ? '网站范围' : '精准网址';
+        const initialPresentation = getPanelPresentation('expanded', false, intervalSeconds);
+
+        mount.innerHTML = `
+            <div class="sar-panel" id="sarControlPanel" data-mode="expanded">
+                <button class="sar-mini" id="sarMiniButton" type="button" aria-label="${initialPresentation.label}">
+                    <span id="sarMiniIcon">${initialPresentation.icon}</span>
+                    <strong id="sarMiniTime">${initialPresentation.time}</strong>
+                </button>
+                <div class="sar-expanded" role="region" aria-label="自动刷新控制面板">
+                    <div class="sar-header" id="dragHandle">
+                        <div class="sar-title">
+                            <span>⏱ 自动刷新</span>
+                            <span class="sar-badge">${scopeLabel}</span>
+                        </div>
+                        <span class="sar-drag-tip">拖动这里</span>
                     </div>
-                    <span class="sar-drag-tip">拖动这里</span>
-                </div>
-                <div class="sar-time">剩余：<strong id="countdown">${formatTime(intervalSeconds)}</strong></div>
-                <div class="sar-actions">
-                    <button class="sar-btn" id="pauseBtn" type="button">⏸ 暂停</button>
-                    <button class="sar-btn" id="resetBtn" type="button">↻ 重置</button>
-                    <button class="sar-btn" id="setBtn" type="button">⚙ 设置</button>
+                    <div class="sar-time">剩余：<strong id="countdown">${formatTime(intervalSeconds)}</strong></div>
+                    <div class="sar-actions">
+                        <button class="sar-btn" id="pauseBtn" type="button">⏸ 暂停</button>
+                        <button class="sar-btn" id="resetBtn" type="button">↻ 重置</button>
+                        <button class="sar-btn" id="setBtn" type="button">⚙ 设置</button>
+                    </div>
                 </div>
             </div>
         `;
 
-        (document.body || document.documentElement).appendChild(host);
-
+        panelEl = root.querySelector('#sarControlPanel');
         countdownEl = root.querySelector('#countdown');
         pauseBtn = root.querySelector('#pauseBtn');
+        miniButtonEl = root.querySelector('#sarMiniButton');
+        miniIconEl = root.querySelector('#sarMiniIcon');
+        miniTimeEl = root.querySelector('#sarMiniTime');
         const resetBtn = root.querySelector('#resetBtn');
         const setBtn = root.querySelector('#setBtn');
         const dragHandle = root.querySelector('#dragHandle');
 
         pauseBtn.addEventListener('click', togglePause);
         resetBtn.addEventListener('click', resetCountdown);
-        setBtn.addEventListener('click', () => runSafely(configureCurrentPage));
+        setBtn.addEventListener('click', () => runSafely(openSettingsDialog));
+        miniButtonEl.addEventListener('click', () => {
+            setPanelMode('expanded');
+            scheduleCollapse();
+        });
 
         const savedPos = await loadPanelPos();
-        let hasCustomPosition = false;
         if (savedPos && Number.isFinite(savedPos.left) && Number.isFinite(savedPos.top)) {
-            hasCustomPosition = true;
-            setPanelPosition(host, savedPos.left, savedPos.top);
+            hasCustomPanelPosition = true;
+            setPanelPosition(uiHost, savedPos.left, savedPos.top);
         }
 
-        let fadeTimer = null;
-        const setOpaque = (opaque) => {
-            host.style.opacity = opaque ? '1' : String(FADE_OPACITY);
-        };
-        const clearFadeTimer = () => {
-            if (fadeTimer !== null) {
-                clearTimeout(fadeTimer);
-                fadeTimer = null;
-            }
-        };
-        const showPanel = () => {
-            clearFadeTimer();
-            setOpaque(true);
-        };
-        const scheduleFade = () => {
-            clearFadeTimer();
-            fadeTimer = setTimeout(() => {
-                fadeTimer = null;
-                setOpaque(false);
-            }, FADE_DELAY_MS);
-        };
+        panelEl.addEventListener('mouseenter', () => {
+            clearCollapseTimer();
+            setPanelMode('expanded');
+        }, true);
+        panelEl.addEventListener('mouseleave', scheduleCollapse, true);
+        panelEl.addEventListener('pointerdown', () => {
+            clearCollapseTimer();
+            setPanelMode('expanded');
+        }, true);
+        panelEl.addEventListener('focusin', () => {
+            clearCollapseTimer();
+            setPanelMode('expanded');
+        }, true);
+        panelEl.addEventListener('focusout', () => {
+            setTimeout(() => {
+                if (!isPanelFocused()) scheduleCollapse();
+            }, 0);
+        }, true);
 
-        host.addEventListener('mouseenter', showPanel, true);
-        host.addEventListener('pointerdown', showPanel, true);
-        host.addEventListener('focusin', showPanel, true);
-        host.addEventListener('mouseleave', scheduleFade, true);
-        host.addEventListener('focusout', scheduleFade, true);
-        scheduleFade();
-
-        let dragging = false;
         let startOffsetX = 0;
         let startOffsetY = 0;
 
         dragHandle.addEventListener('pointerdown', (event) => {
             if (event.pointerType !== 'touch' && event.button !== 0) return;
 
-            dragging = true;
-            hasCustomPosition = true;
-            showPanel();
+            isDragging = true;
+            hasCustomPanelPosition = true;
+            clearCollapseTimer();
+            setPanelMode('expanded');
 
-            const rect = host.getBoundingClientRect();
+            const rect = uiHost.getBoundingClientRect();
             startOffsetX = event.clientX - rect.left;
             startOffsetY = event.clientY - rect.top;
-            setPanelPosition(host, rect.left, rect.top);
+            setPanelPosition(uiHost, rect.left, rect.top);
 
             dragHandle.setPointerCapture?.(event.pointerId);
             event.preventDefault();
         });
 
         window.addEventListener('pointermove', (event) => {
-            if (!dragging) return;
-            showPanel();
-            setPanelPosition(host, event.clientX - startOffsetX, event.clientY - startOffsetY);
+            if (!isDragging) return;
+            setPanelPosition(uiHost, event.clientX - startOffsetX, event.clientY - startOffsetY);
         }, true);
 
         const finishDrag = (event) => {
-            if (!dragging) return;
-            dragging = false;
+            if (!isDragging) return;
+            isDragging = false;
             dragHandle.releasePointerCapture?.(event.pointerId);
-            void savePanelPosition(host);
-            scheduleFade();
+            void savePanelPosition(uiHost);
+            scheduleCollapse();
         };
 
         window.addEventListener('pointerup', finishDrag, true);
         window.addEventListener('pointercancel', finishDrag, true);
-
         window.addEventListener('resize', () => {
-            if (!hasCustomPosition) return;
-            const rect = host.getBoundingClientRect();
-            setPanelPosition(host, rect.left, rect.top);
+            if (!hasCustomPanelPosition || !uiHost) return;
+            const rect = uiHost.getBoundingClientRect();
+            setPanelPosition(uiHost, rect.left, rect.top);
         });
+
+        document.addEventListener('pointerdown', (event) => {
+            if (!panelEl || settingsDialogOpen || panelMode !== 'expanded') return;
+            const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+            const isInside = path.includes(uiHost) || uiHost.contains(event.target);
+            if (!isInside) {
+                clearCollapseTimer();
+                setPanelMode('mini');
+            }
+        }, true);
+
+        setPanelMode('expanded');
+        scheduleCollapse();
     }
 
     function setPanelPosition(panel, requestedLeft, requestedTop) {
@@ -627,6 +1043,70 @@
         }
 
         return null;
+    }
+
+    function applyRuleUpdate(config, { url, host, seconds, scope, removeExactOverride = false }) {
+        delete config.disabled[url];
+
+        if (scope === 'site') {
+            config.site[host] = seconds;
+            if (removeExactOverride) {
+                delete config.exact[url];
+            }
+            return config;
+        }
+
+        config.exact[url] = seconds;
+        return config;
+    }
+
+    function disableUrl(config, { url, host }) {
+        const hasSiteRule = isValidInterval(config.site[host]);
+        delete config.exact[url];
+
+        if (hasSiteRule) {
+            config.disabled[url] = true;
+        } else {
+            delete config.disabled[url];
+        }
+
+        return config;
+    }
+
+    function removeSiteRule(config, { host }) {
+        delete config.site[host];
+        return clearDisabledRulesForHost(config, host);
+    }
+
+    function getSettingsState(config, url, host) {
+        const hasExactRule = isValidInterval(config?.exact?.[url]);
+        const hasSiteRule = isValidInterval(config?.site?.[host]);
+        const isDisabled = config?.disabled?.[url] === true && !hasExactRule;
+        const effectiveRule = resolveRule(config, url, host);
+
+        return {
+            seconds: effectiveRule?.seconds
+                || (hasExactRule ? config.exact[url] : null)
+                || (hasSiteRule ? config.site[host] : null)
+                || DEFAULT_INTERVAL,
+            scope: effectiveRule?.scope || (hasExactRule ? 'exact' : (hasSiteRule && !isDisabled ? 'site' : 'exact')),
+            effectiveScope: effectiveRule?.scope || null,
+            hasExactRule,
+            hasSiteRule,
+            isDisabled
+        };
+    }
+
+    function getPanelPresentation(mode, paused, remainingSeconds) {
+        const time = formatTime(remainingSeconds);
+        return {
+            mode,
+            icon: paused ? '⏸' : '⏱',
+            time,
+            label: paused
+                ? `自动刷新已暂停，剩余 ${time}`
+                : `自动刷新，剩余 ${time}`
+        };
     }
 
     function clearDisabledRulesForHost(config, host) {

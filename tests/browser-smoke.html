@@ -13,8 +13,8 @@
             if (key === 'autoRefreshConfig_v2') {
                 return JSON.stringify({
                     version: 2,
-                    site: {},
-                    exact: { [location.href]: 5 },
+                    site: { [location.hostname]: 60 },
+                    exact: { [location.href]: 30 },
                     disabled: {}
                 });
             }
@@ -22,45 +22,133 @@
         };
         window.GM_setValue = async () => {};
         window.alert = () => {};
-        window.prompt = () => null;
-        window.confirm = () => true;
     </script>
 
     <script src="../smart-auto-refresh-pro.user.js"></script>
 
     <script>
+        const fail = (error) => {
+            document.body.dataset.smokeResult = 'FAIL';
+            document.body.dataset.smokeError = error instanceof Error ? error.message : String(error);
+        };
+
         setTimeout(() => {
             try {
                 const host = document.querySelector('#autoRefreshProPanel');
                 if (!host) throw new Error('control panel host was not created');
 
                 const root = host.shadowRoot || host;
+                const panel = root.querySelector('#sarControlPanel');
                 const badge = root.querySelector('.sar-badge');
                 const countdown = root.querySelector('#countdown');
-                const pauseButton = root.querySelector('#pauseBtn');
 
+                if (!panel || panel.dataset.mode !== 'expanded') {
+                    throw new Error(`initial panel mode mismatch: ${panel?.dataset.mode}`);
+                }
                 if (!badge || badge.textContent.trim() !== '精准网址') {
                     throw new Error('exact-scope badge mismatch');
                 }
-                if (!countdown || countdown.textContent.trim() !== '00:00:05') {
+                if (!countdown || countdown.textContent.trim() !== '00:00:30') {
                     throw new Error(`countdown mismatch: ${countdown?.textContent}`);
                 }
-                if (!pauseButton) throw new Error('pause button missing');
-                if (host.style.zIndex !== '2147483647') throw new Error('panel z-index mismatch');
-
-                pauseButton.click();
-                if (!document.title.startsWith('[已暂停 00:00:05]')) {
-                    throw new Error(`pause title mismatch: ${document.title}`);
+                if (host.style.zIndex !== '2147483647') {
+                    throw new Error('panel z-index mismatch');
                 }
 
-                document.body.dataset.smokeResult = 'PASS';
-                document.body.dataset.smokeBadge = badge.textContent.trim();
-                document.body.dataset.smokeCountdown = countdown.textContent.trim();
+                document.body.dataset.smokePanel = 'PASS';
             } catch (error) {
-                document.body.dataset.smokeResult = 'FAIL';
-                document.body.dataset.smokeError = error.message;
+                fail(error);
             }
         }, 50);
+
+        setTimeout(() => {
+            if (document.body.dataset.smokeResult === 'FAIL') return;
+            try {
+                const host = document.querySelector('#autoRefreshProPanel');
+                const root = host.shadowRoot || host;
+                const panel = root.querySelector('#sarControlPanel');
+                const miniButton = root.querySelector('#sarMiniButton');
+
+                if (panel.dataset.mode !== 'mini') {
+                    throw new Error(`idle panel did not collapse: ${panel.dataset.mode}`);
+                }
+                if (!miniButton || getComputedStyle(miniButton).display === 'none') {
+                    throw new Error('mini timer is not visible after idle collapse');
+                }
+                if (!miniButton.getAttribute('aria-label')?.includes('自动刷新')) {
+                    throw new Error('mini timer accessible label missing');
+                }
+
+                document.body.dataset.smokeMini = 'PASS';
+                miniButton.click();
+                if (panel.dataset.mode !== 'expanded') {
+                    throw new Error('mini timer did not expand after click');
+                }
+                document.body.dataset.smokeExpand = 'PASS';
+
+                const settingsButton = root.querySelector('#setBtn');
+                if (!settingsButton) throw new Error('settings button missing');
+                settingsButton.click();
+            } catch (error) {
+                fail(error);
+            }
+        }, 5300);
+
+        setTimeout(() => {
+            if (document.body.dataset.smokeResult === 'FAIL') return;
+            try {
+                const host = document.querySelector('#autoRefreshProPanel');
+                const root = host.shadowRoot || host;
+                const backdrop = root.querySelector('#sarSettingsBackdrop');
+                const dialog = backdrop?.querySelector('[role="dialog"]');
+                const intervalInput = backdrop?.querySelector('#sarIntervalInput');
+                const saveButton = backdrop?.querySelector('#sarSaveBtn');
+                const disableButton = backdrop?.querySelector('#sarDisableBtn');
+                const deleteSiteButton = backdrop?.querySelector('#sarDeleteSiteBtn');
+                const siteRadio = backdrop?.querySelector('input[name="sarScope"][value="site"]');
+                const overrideChoice = backdrop?.querySelector('#sarOverrideChoice');
+                const message = backdrop?.querySelector('#sarDialogMessage');
+
+                if (!backdrop || !dialog) throw new Error('settings dialog did not open');
+                if (intervalInput?.value !== '30') {
+                    throw new Error(`settings interval mismatch: ${intervalInput?.value}`);
+                }
+                if (!saveButton || saveButton.textContent.trim() !== '保存设置') {
+                    throw new Error('settings save button missing');
+                }
+                if (!disableButton || !deleteSiteButton) {
+                    throw new Error('contextual management actions missing');
+                }
+
+                siteRadio.checked = true;
+                siteRadio.dispatchEvent(new Event('change', { bubbles: true }));
+                if (overrideChoice.hidden) {
+                    throw new Error('exact override choice did not appear for site scope');
+                }
+
+                intervalInput.value = '3';
+                intervalInput.dispatchEvent(new Event('input', { bubbles: true }));
+                saveButton.click();
+                if (message.hidden || message.dataset.kind !== 'warning') {
+                    throw new Error('high-frequency inline confirmation missing');
+                }
+                if (saveButton.textContent.trim() !== '确认高频并保存') {
+                    throw new Error('high-frequency confirmation button state missing');
+                }
+
+                deleteSiteButton.click();
+                const actionConfirm = backdrop.querySelector('#sarActionConfirm');
+                if (!actionConfirm || actionConfirm.hidden) {
+                    throw new Error('destructive action inline confirmation missing');
+                }
+
+                document.body.dataset.smokeDialog = 'PASS';
+                document.body.dataset.smokeManage = 'PASS';
+                document.body.dataset.smokeResult = 'PASS';
+            } catch (error) {
+                fail(error);
+            }
+        }, 5450);
     </script>
 </body>
 </html>

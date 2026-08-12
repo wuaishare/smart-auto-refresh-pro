@@ -30,6 +30,11 @@ const injection = `
         togglePause,
         resetCountdown,
         loadConfig,
+        applyRuleUpdate: typeof applyRuleUpdate === 'function' ? applyRuleUpdate : null,
+        disableUrl: typeof disableUrl === 'function' ? disableUrl : null,
+        removeSiteRule: typeof removeSiteRule === 'function' ? removeSiteRule : null,
+        getSettingsState: typeof getSettingsState === 'function' ? getSettingsState : null,
+        getPanelPresentation: typeof getPanelPresentation === 'function' ? getPanelPresentation : null,
         getTimerState: () => ({
             intervalSeconds,
             isPaused,
@@ -135,6 +140,9 @@ function createRuntime(options = {}) {
             assert.ok(callback, `Menu command not registered: ${label}`);
             return callback();
         },
+        getMenuLabels() {
+            return [...menuCommands.keys()];
+        },
         setNow(value) {
             now = value;
         },
@@ -145,8 +153,8 @@ function createRuntime(options = {}) {
     };
 }
 
-test('userscript metadata is pinned to the canonical v1.3 project links', () => {
-    assert.match(source, /^\/\/ @version\s+1\.3$/m);
+test('userscript metadata is pinned to the canonical v1.3.1 project links', () => {
+    assert.match(source, /^\/\/ @version\s+1\.3\.1$/m);
     assert.match(source, /^\/\/ @homepageURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro$/m);
     assert.match(source, /^\/\/ @supportURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro\/issues$/m);
     assert.doesNotMatch(source, /^\/\/ @(downloadURL|updateURL)\s+/m);
@@ -269,59 +277,138 @@ test('interval parsing accepts decimal integers and rejects loose numeric format
     assert.equal(api.isValidInterval('5'), false);
 });
 
-test('menu setting can create a site-wide rule and reload once', async () => {
-    const runtime = createRuntime({
-        href: 'https://example.com/path',
-        promptResponses: ['30', '1']
-    });
-
-    await runtime.invokeMenu('🛠 设置当前页面刷新间隔');
-
-    const persisted = JSON.parse(runtime.storage.autoRefreshConfig_v2);
-    assert.deepEqual(persisted.site, { 'example.com': 30 });
-    assert.deepEqual(persisted.exact, {});
-    assert.deepEqual(persisted.disabled, {});
-    assert.equal(runtime.getReloadCount(), 1);
+test('userscript exposes one unified management menu entry', () => {
+    const runtime = createRuntime();
+    assert.deepEqual(runtime.getMenuLabels(), ['⚙ 设置 / 管理自动刷新']);
 });
 
-test('menu setting can create an exact rule without deleting the site fallback', async () => {
-    const runtime = createRuntime({
-        href: 'https://example.com/path',
-        promptResponses: ['10', '2']
-    });
-    runtime.storage.autoRefreshConfig_v2 = JSON.stringify({
+test('rule update helpers preserve site fallback and exact override semantics', () => {
+    const { api } = createRuntime();
+    assert.equal(typeof api.applyRuleUpdate, 'function');
+
+    const url = 'https://example.com/path';
+    const config = {
         version: 2,
         site: { 'example.com': 60 },
-        exact: {},
-        disabled: {}
+        exact: { [url]: 10 },
+        disabled: { [url]: true }
+    };
+
+    api.applyRuleUpdate(config, {
+        url,
+        host: 'example.com',
+        seconds: 30,
+        scope: 'site',
+        removeExactOverride: false
     });
+    assert.equal(config.site['example.com'], 30);
+    assert.equal(config.exact[url], 10);
+    assert.equal(config.disabled[url], undefined);
 
-    await runtime.invokeMenu('🛠 设置当前页面刷新间隔');
+    api.applyRuleUpdate(config, {
+        url,
+        host: 'example.com',
+        seconds: 20,
+        scope: 'site',
+        removeExactOverride: true
+    });
+    assert.equal(config.site['example.com'], 20);
+    assert.equal(config.exact[url], undefined);
 
-    const persisted = JSON.parse(runtime.storage.autoRefreshConfig_v2);
-    assert.equal(persisted.site['example.com'], 60);
-    assert.equal(persisted.exact['https://example.com/path'], 10);
-    assert.equal(runtime.getReloadCount(), 1);
+    api.applyRuleUpdate(config, {
+        url,
+        host: 'example.com',
+        seconds: 8,
+        scope: 'exact',
+        removeExactOverride: false
+    });
+    assert.equal(config.exact[url], 8);
 });
 
-test('closing the current page preserves the site rule and adds an exact exclusion', async () => {
-    const runtime = createRuntime({
-        href: 'https://example.com/path'
-    });
-    runtime.storage.autoRefreshConfig_v2 = JSON.stringify({
+test('disable and delete helpers keep site scope changes bounded', () => {
+    const { api } = createRuntime();
+    assert.equal(typeof api.disableUrl, 'function');
+    assert.equal(typeof api.removeSiteRule, 'function');
+
+    const url = 'https://example.com/path';
+    const config = {
+        version: 2,
+        site: { 'example.com': 60, 'other.example': 90 },
+        exact: { [url]: 10 },
+        disabled: {
+            'https://example.com/old': true,
+            'https://other.example/a': true
+        }
+    };
+
+    api.disableUrl(config, { url, host: 'example.com' });
+    assert.equal(config.exact[url], undefined);
+    assert.equal(config.disabled[url], true);
+    assert.equal(config.site['example.com'], 60);
+
+    const cleared = api.removeSiteRule(config, { host: 'example.com' });
+    assert.equal(cleared, 2);
+    assert.equal(config.site['example.com'], undefined);
+    assert.equal(config.site['other.example'], 90);
+    assert.equal(config.disabled['https://other.example/a'], true);
+});
+
+test('settings state describes exact, site, disabled and empty pages', () => {
+    const { api } = createRuntime();
+    assert.equal(typeof api.getSettingsState, 'function');
+    const url = 'https://example.com/path';
+
+    const config = {
         version: 2,
         site: { 'example.com': 60 },
-        exact: { 'https://example.com/path': 10 },
+        exact: { [url]: 10 },
         disabled: {}
+    };
+    assert.deepEqual(plain(api.getSettingsState(config, url, 'example.com')), {
+        seconds: 10,
+        scope: 'exact',
+        effectiveScope: 'exact',
+        hasExactRule: true,
+        hasSiteRule: true,
+        isDisabled: false
     });
 
-    await runtime.invokeMenu('❌ 关闭当前页面自动刷新');
+    delete config.exact[url];
+    assert.deepEqual(plain(api.getSettingsState(config, url, 'example.com')), {
+        seconds: 60,
+        scope: 'site',
+        effectiveScope: 'site',
+        hasExactRule: false,
+        hasSiteRule: true,
+        isDisabled: false
+    });
 
-    const persisted = JSON.parse(runtime.storage.autoRefreshConfig_v2);
-    assert.equal(persisted.site['example.com'], 60);
-    assert.equal(persisted.exact['https://example.com/path'], undefined);
-    assert.equal(persisted.disabled['https://example.com/path'], true);
-    assert.equal(runtime.getReloadCount(), 1);
+    config.disabled[url] = true;
+    assert.deepEqual(plain(api.getSettingsState(config, url, 'example.com')), {
+        seconds: 60,
+        scope: 'exact',
+        effectiveScope: null,
+        hasExactRule: false,
+        hasSiteRule: true,
+        isDisabled: true
+    });
+});
+
+test('panel presentation exposes readable running and paused mini timer labels', () => {
+    const { api } = createRuntime();
+    assert.equal(typeof api.getPanelPresentation, 'function');
+    assert.deepEqual(plain(api.getPanelPresentation('mini', false, 273)), {
+        mode: 'mini',
+        icon: '⏱',
+        time: '00:04:33',
+        label: '自动刷新，剩余 00:04:33'
+    });
+    assert.deepEqual(plain(api.getPanelPresentation('mini', true, 273)), {
+        mode: 'mini',
+        icon: '⏸',
+        time: '00:04:33',
+        label: '自动刷新已暂停，剩余 00:04:33'
+    });
 });
 
 test('one-second countdown does not reload immediately and reloads at deadline', () => {

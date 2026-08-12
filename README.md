@@ -77,6 +77,15 @@
 
 ---
 
+### 🤝 开源协作
+
+* 📦 GitHub 仓库：[wuaishare/smart-auto-refresh-pro](https://github.com/wuaishare/smart-auto-refresh-pro)
+* 🐛 问题反馈：[提交 Issue](https://github.com/wuaishare/smart-auto-refresh-pro/issues)
+* 🔀 共创改进：欢迎 Fork 仓库后提交 Pull Request
+* 🔄 Greasy Fork 发布脚本已配置为从 GitHub `main` 分支的 `smart-auto-refresh-pro.user.js` 同步源码
+
+---
+
 ### 🧑‍💻 作者
 
-本脚本由吾爱分享网（[www.wuaishare.cn](https://www.wuaishare.cn/)）提交发布，代码内容由 ChatGPT 协助优化并撰写。欢迎修改、自用、分享，无需署名。如果您有任何建议，欢迎在评论区留言反馈！
+本脚本由吾爱分享网（[www.wuaishare.cn](https://www.wuaishare.cn/)）提交发布，代码内容由 ChatGPT 协助优化并撰写。欢迎修改、自用、分享，无需署名。如有建议、Bug 或改进方案，欢迎通过 [GitHub Issues](https://github.com/wuaishare/smart-auto-refresh-pro/issues) 反馈，或直接提交 Pull Request 参与共创。

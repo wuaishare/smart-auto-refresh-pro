@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>Smart Auto Refresh Pro Browser Smoke</title>
+</head>
+<body>
+    <p>Browser smoke harness</p>
+
+    <script>
+        window.GM_registerMenuCommand = () => {};
+        window.GM_getValue = async (key, fallback) => {
+            if (key === 'autoRefreshConfig_v2') {
+                return JSON.stringify({
+                    version: 2,
+                    site: {},
+                    exact: { [location.href]: 5 },
+                    disabled: {}
+                });
+            }
+            return fallback;
+        };
+        window.GM_setValue = async () => {};
+        window.alert = () => {};
+        window.prompt = () => null;
+        window.confirm = () => true;
+    </script>
+
+    <script src="../smart-auto-refresh-pro.user.js"></script>
+
+    <script>
+        setTimeout(() => {
+            try {
+                const host = document.querySelector('#autoRefreshProPanel');
+                if (!host) throw new Error('control panel host was not created');
+
+                const root = host.shadowRoot || host;
+                const badge = root.querySelector('.sar-badge');
+                const countdown = root.querySelector('#countdown');
+                const pauseButton = root.querySelector('#pauseBtn');
+
+                if (!badge || badge.textContent.trim() !== '精准网址') {
+                    throw new Error('exact-scope badge mismatch');
+                }
+                if (!countdown || countdown.textContent.trim() !== '00:00:05') {
+                    throw new Error(`countdown mismatch: ${countdown?.textContent}`);
+                }
+                if (!pauseButton) throw new Error('pause button missing');
+                if (host.style.zIndex !== '2147483647') throw new Error('panel z-index mismatch');
+
+                pauseButton.click();
+                if (!document.title.startsWith('[已暂停 00:00:05]')) {
+                    throw new Error(`pause title mismatch: ${document.title}`);
+                }
+
+                document.body.dataset.smokeResult = 'PASS';
+                document.body.dataset.smokeBadge = badge.textContent.trim();
+                document.body.dataset.smokeCountdown = countdown.textContent.trim();
+            } catch (error) {
+                document.body.dataset.smokeResult = 'FAIL';
+                document.body.dataset.smokeError = error.message;
+            }
+        }, 50);
+    </script>
+</body>
+</html>

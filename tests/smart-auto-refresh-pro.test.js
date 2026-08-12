@@ -35,6 +35,7 @@ const injection = `
         removeSiteRule: typeof removeSiteRule === 'function' ? removeSiteRule : null,
         getSettingsState: typeof getSettingsState === 'function' ? getSettingsState : null,
         getPanelPresentation: typeof getPanelPresentation === 'function' ? getPanelPresentation : null,
+        stepIntervalValue: typeof stepIntervalValue === 'function' ? stepIntervalValue : null,
         getTimerState: () => ({
             intervalSeconds,
             isPaused,
@@ -153,8 +154,8 @@ function createRuntime(options = {}) {
     };
 }
 
-test('userscript metadata is pinned to the canonical v1.3.1 project links', () => {
-    assert.match(source, /^\/\/ @version\s+1\.3\.1$/m);
+test('userscript metadata is pinned to the canonical v1.3.2 project links', () => {
+    assert.match(source, /^\/\/ @version\s+1\.3\.2$/m);
     assert.match(source, /^\/\/ @homepageURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro$/m);
     assert.match(source, /^\/\/ @supportURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro\/issues$/m);
     assert.doesNotMatch(source, /^\/\/ @(downloadURL|updateURL)\s+/m);
@@ -280,6 +281,43 @@ test('interval parsing accepts decimal integers and rejects loose numeric format
 test('userscript exposes one unified management menu entry', () => {
     const runtime = createRuntime();
     assert.deepEqual(runtime.getMenuLabels(), ['⚙ 设置 / 管理自动刷新']);
+});
+
+test('site scope takes over the current page by default when an exact rule exists', () => {
+    const { api } = createRuntime();
+    const url = 'https://example.com/path';
+    const config = {
+        version: 2,
+        site: { 'example.com': 60 },
+        exact: { [url]: 10 },
+        disabled: {}
+    };
+
+    api.applyRuleUpdate(config, {
+        url,
+        host: 'example.com',
+        seconds: 30,
+        scope: 'site'
+    });
+
+    assert.equal(config.site['example.com'], 30);
+    assert.equal(config.exact[url], undefined);
+    assert.deepEqual(plain(api.resolveRule(config, url, 'example.com')), {
+        scope: 'site',
+        key: 'example.com',
+        seconds: 30
+    });
+});
+
+test('interval stepper helper supports 1-second and 10-second steps with a minimum of one', () => {
+    const { api } = createRuntime();
+    assert.equal(typeof api.stepIntervalValue, 'function');
+    assert.equal(api.stepIntervalValue(60, 1, 1), 61);
+    assert.equal(api.stepIntervalValue(60, -1, 1), 59);
+    assert.equal(api.stepIntervalValue(60, 1, 10), 70);
+    assert.equal(api.stepIntervalValue(5, -1, 10), 1);
+    assert.equal(api.stepIntervalValue(1, -1, 1), 1);
+    assert.equal(api.stepIntervalValue('invalid', 1, 1), 2);
 });
 
 test('rule update helpers preserve site fallback and exact override semantics', () => {

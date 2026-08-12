@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页自动刷新 Pro
 // @namespace    https://www.wuaishare.cn/
-// @version      1.3.1
-// @description  自动刷新页面：支持网站范围或精准网址规则、统一设置管理、Mini Timer、倒计时/暂停/重置、可拖拽面板与位置记忆；采用绝对时间计时。
+// @version      1.3.2
+// @description  自动刷新页面：支持专业刷新间隔 Stepper、当前页/整站两级规则、统一设置管理、可独立拖拽并贴边的 Mini Timer、倒计时/暂停/重置；采用绝对时间计时。
 // @author       吾爱分享网
 // @homepageURL  https://github.com/wuaishare/smart-auto-refresh-pro
 // @supportURL   https://github.com/wuaishare/smart-auto-refresh-pro/issues
@@ -24,6 +24,7 @@
     const HIGH_FREQUENCY_WARNING_BELOW = 5;
     const DEFAULT_INTERVAL = 60;
     const COLLAPSE_DELAY_MS = 5000;
+    const MINI_DRAG_THRESHOLD_PX = 4;
 
     let activeRule = null;
     let intervalSeconds = 0;
@@ -98,31 +99,45 @@
                 </div>
 
                 <form id="sarSettingsForm" novalidate>
-                    <label class="sar-field">
+                    <div class="sar-field">
                         <span class="sar-label">刷新间隔</span>
-                        <span class="sar-number-wrap">
-                            <input id="sarIntervalInput" type="text" inputmode="numeric" autocomplete="off" value="${state.seconds}">
-                            <span>秒</span>
-                        </span>
-                    </label>
+                        <div class="sar-stepper" id="sarIntervalStepper">
+                            <button class="sar-stepper-btn" id="sarIntervalDecrease" type="button" aria-label="减少刷新间隔">−</button>
+                            <label class="sar-stepper-value">
+                                <input id="sarIntervalInput" type="text" inputmode="numeric" autocomplete="off" value="${state.seconds}" aria-label="刷新间隔秒数">
+                                <span>秒</span>
+                            </label>
+                            <button class="sar-stepper-btn" id="sarIntervalIncrease" type="button" aria-label="增加刷新间隔">+</button>
+                        </div>
+                        <small class="sar-field-hint">点击 ±、滚动鼠标滚轮或使用 ↑ / ↓ 调整；按住 Shift 每次调整 10 秒。</small>
+                    </div>
 
                     <fieldset class="sar-fieldset">
-                        <legend>适用范围</legend>
+                        <legend>刷新范围</legend>
+                        <p class="sar-field-hint sar-scope-hint">选择这条刷新规则应该应用到哪里。</p>
                         <label class="sar-radio-card">
                             <input type="radio" name="sarScope" value="exact" ${state.scope === 'exact' ? 'checked' : ''}>
-                            <span><strong>精准网址</strong><small>仅当前完整 URL，优先级最高</small></span>
+                            <span class="sar-radio-content">
+                                <span class="sar-radio-title"><strong>仅当前页面</strong><em>精准 URL</em></span>
+                                <small>只对当前完整网址生效；查询参数或地址变化后会视为不同页面。</small>
+                                <code id="sarCurrentUrl"></code>
+                            </span>
                         </label>
                         <label class="sar-radio-card">
                             <input type="radio" name="sarScope" value="site" ${state.scope === 'site' ? 'checked' : ''}>
-                            <span><strong>网站范围</strong><small>${currentHost} 下的页面默认使用此规则</small></span>
+                            <span class="sar-radio-content">
+                                <span class="sar-radio-title"><strong>整个网站</strong><em id="sarCurrentHostBadge"></em></span>
+                                <small>作为当前网站的默认刷新规则，站内页面都会继承；仍可为特定页面单独覆盖。</small>
+                                <code id="sarCurrentHost"></code>
+                            </span>
                         </label>
                     </fieldset>
 
                     <div id="sarOverrideChoice" class="sar-inline-card" hidden>
-                        <strong>当前页面已有精准网址规则</strong>
-                        <p>精准规则会优先于网站范围规则。请选择保存网站规则后如何处理当前精准规则。</p>
-                        <label><input type="radio" name="sarOverride" value="keep" checked> 保留精准规则</label>
-                        <label><input type="radio" name="sarOverride" value="remove"> 删除精准规则，让网站规则立即生效</label>
+                        <strong>让网站规则立即接管当前页面？</strong>
+                        <p>当前页面已有单独规则。你刚刚选择了“整个网站”，建议同时取消当前页的单独覆盖。</p>
+                        <label class="sar-override-option"><input type="radio" name="sarOverride" value="remove" checked> <span><b>使用网站规则（推荐）</b><small>删除当前页单独规则，保存后当前页立即按网站规则刷新。</small></span></label>
+                        <label class="sar-override-option"><input type="radio" name="sarOverride" value="keep"> <span><b>保留当前页单独规则</b><small>网站规则只影响其他页面，当前页继续使用原来的单独规则。</small></span></label>
                     </div>
 
                     <div id="sarDialogMessage" class="sar-message" hidden></div>
@@ -153,6 +168,12 @@
         const dialog = backdrop.querySelector('.sar-dialog');
         const form = backdrop.querySelector('#sarSettingsForm');
         const intervalInput = backdrop.querySelector('#sarIntervalInput');
+        const intervalStepper = backdrop.querySelector('#sarIntervalStepper');
+        const intervalDecrease = backdrop.querySelector('#sarIntervalDecrease');
+        const intervalIncrease = backdrop.querySelector('#sarIntervalIncrease');
+        const currentUrlEl = backdrop.querySelector('#sarCurrentUrl');
+        const currentHostEl = backdrop.querySelector('#sarCurrentHost');
+        const currentHostBadge = backdrop.querySelector('#sarCurrentHostBadge');
         const saveBtn = backdrop.querySelector('#sarSaveBtn');
         const messageEl = backdrop.querySelector('#sarDialogMessage');
         const statusEl = backdrop.querySelector('#sarDialogStatus');
@@ -165,8 +186,14 @@
         const actionConfirmYes = backdrop.querySelector('#sarActionConfirmYes');
         const actionConfirmNo = backdrop.querySelector('#sarActionConfirmNo');
         let pendingHighFrequencyValue = null;
+        const stepperCleanup = [];
 
         statusEl.textContent = describeSettingsStatus(state);
+        currentUrlEl.textContent = currentUrl;
+        currentUrlEl.title = currentUrl;
+        currentHostEl.textContent = currentHost;
+        currentHostEl.title = currentHost;
+        currentHostBadge.textContent = currentHost;
 
         const setMessage = (text, kind = 'error') => {
             messageEl.textContent = text;
@@ -179,6 +206,76 @@
             saveBtn.textContent = '保存设置';
             setMessage('');
         };
+
+        const getIntervalValue = () => parseIntervalInput(intervalInput.value) ?? MIN_INTERVAL;
+        const adjustInterval = (direction, step = 1) => {
+            const next = stepIntervalValue(getIntervalValue(), direction, step);
+            intervalInput.value = String(next);
+            resetPendingSave();
+        };
+
+        const bindStepperButton = (button, direction) => {
+            let holdDelayTimer = null;
+            let repeatTimer = null;
+            let repeated = false;
+            let heldStep = 1;
+
+            const clearHold = () => {
+                if (holdDelayTimer !== null) {
+                    clearTimeout(holdDelayTimer);
+                    holdDelayTimer = null;
+                }
+                if (repeatTimer !== null) {
+                    clearTimeout(repeatTimer);
+                    repeatTimer = null;
+                }
+            };
+
+            const repeat = () => {
+                repeated = true;
+                adjustInterval(direction, heldStep);
+                repeatTimer = setTimeout(repeat, 85);
+            };
+
+            button.addEventListener('pointerdown', (event) => {
+                if (event.pointerType !== 'touch' && event.button !== 0) return;
+                clearHold();
+                repeated = false;
+                heldStep = event.shiftKey ? 10 : 1;
+                button.setPointerCapture?.(event.pointerId);
+                holdDelayTimer = setTimeout(repeat, 350);
+            });
+
+            button.addEventListener('pointerup', (event) => {
+                const wasRepeated = repeated;
+                clearHold();
+                button.releasePointerCapture?.(event.pointerId);
+                if (!wasRepeated) adjustInterval(direction, event.shiftKey ? 10 : 1);
+            });
+            button.addEventListener('pointercancel', clearHold);
+            button.addEventListener('lostpointercapture', clearHold);
+            button.addEventListener('click', (event) => {
+                if (event.detail === 0) adjustInterval(direction, event.shiftKey ? 10 : 1);
+                event.preventDefault();
+            });
+
+            stepperCleanup.push(clearHold);
+        };
+
+        bindStepperButton(intervalDecrease, -1);
+        bindStepperButton(intervalIncrease, 1);
+
+        intervalStepper.addEventListener('wheel', (event) => {
+            if (event.deltaY === 0) return;
+            event.preventDefault();
+            adjustInterval(event.deltaY < 0 ? 1 : -1, event.shiftKey ? 10 : 1);
+        }, { passive: false });
+
+        intervalInput.addEventListener('keydown', (event) => {
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+            event.preventDefault();
+            adjustInterval(event.key === 'ArrowUp' ? 1 : -1, event.shiftKey ? 10 : 1);
+        });
 
         const hideActionConfirm = () => {
             actionConfirm.hidden = true;
@@ -209,6 +306,7 @@
 
         const closeDialog = () => {
             if (!backdrop.isConnected) return;
+            stepperCleanup.forEach((cleanup) => cleanup());
             backdrop.remove();
             settingsDialogOpen = false;
             if (panelEl) scheduleCollapse();
@@ -274,7 +372,7 @@
             }
 
             const scope = form.elements.sarScope.value;
-            const overrideDecision = form.elements.sarOverride?.value || 'keep';
+            const overrideDecision = form.elements.sarOverride?.value || 'remove';
             applyRuleUpdate(config, {
                 url: currentUrl,
                 host: currentHost,
@@ -473,10 +571,12 @@
                 box-shadow: 0 4px 14px rgba(0,0,0,.2);
                 font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 font-variant-numeric: tabular-nums;
-                cursor: pointer;
+                cursor: grab;
+                touch-action: none;
                 backdrop-filter: blur(8px);
                 -webkit-backdrop-filter: blur(8px);
             }
+            .sar-mini:active { cursor: grabbing; }
             .sar-mini:hover,
             .sar-mini:focus-visible {
                 background: rgba(20,20,24,.9);
@@ -620,28 +720,65 @@
                 font-size: 13px;
                 font-weight: 650;
             }
-            .sar-number-wrap {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }
-            .sar-number-wrap input {
-                width: 100%;
-                min-width: 0;
-                height: 40px;
-                padding: 0 11px;
+            .sar-stepper {
+                display: grid;
+                grid-template-columns: 42px minmax(0, 1fr) 42px;
+                align-items: stretch;
+                min-height: 44px;
+                overflow: hidden;
                 border: 1px solid #d1d5db;
-                border-radius: 9px;
+                border-radius: 11px;
                 background: #fff;
-                color: #111827;
-                font-variant-numeric: tabular-nums;
-                outline: none;
+                transition: border-color 140ms ease, box-shadow 140ms ease;
             }
-            .sar-number-wrap input:focus {
+            .sar-stepper:focus-within {
                 border-color: #60a5fa;
                 box-shadow: 0 0 0 3px rgba(96,165,250,.18);
             }
-            .sar-number-wrap > span { color: #6b7280; }
+            .sar-stepper-btn {
+                border: 0;
+                background: #f8fafc;
+                color: #334155;
+                font-size: 22px;
+                font-weight: 500;
+                line-height: 1;
+                cursor: pointer;
+                touch-action: none;
+                user-select: none;
+            }
+            .sar-stepper-btn:first-child { border-right: 1px solid #e5e7eb; }
+            .sar-stepper-btn:last-child { border-left: 1px solid #e5e7eb; }
+            .sar-stepper-btn:hover { background: #f1f5f9; color: #0f172a; }
+            .sar-stepper-btn:active { background: #e2e8f0; }
+            .sar-stepper-btn:focus-visible { outline: 2px solid #60a5fa; outline-offset: -3px; }
+            .sar-stepper-value {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 7px;
+                min-width: 0;
+                padding: 0 10px;
+                cursor: text;
+            }
+            .sar-stepper-value input {
+                width: min(120px, 100%);
+                min-width: 0;
+                border: 0;
+                background: transparent;
+                color: #0f172a;
+                font-size: 18px;
+                font-weight: 700;
+                font-variant-numeric: tabular-nums;
+                text-align: right;
+                outline: none;
+            }
+            .sar-stepper-value span { color: #64748b; font-size: 13px; }
+            .sar-field-hint {
+                display: block;
+                color: #64748b;
+                font-size: 11px;
+                line-height: 1.45;
+            }
             .sar-fieldset {
                 display: grid;
                 gap: 8px;
@@ -649,24 +786,52 @@
                 padding: 0;
                 border: 0;
             }
-            .sar-fieldset legend { margin-bottom: 8px; }
+            .sar-fieldset legend { margin-bottom: 3px; }
+            .sar-scope-hint { margin: 0 0 7px; }
             .sar-radio-card {
                 display: flex;
                 align-items: flex-start;
                 gap: 10px;
-                padding: 10px 11px;
+                padding: 11px 12px;
                 border: 1px solid #e5e7eb;
-                border-radius: 10px;
+                border-radius: 11px;
                 cursor: pointer;
+                transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
             }
+            .sar-radio-card:hover { border-color: #cbd5e1; background: #f8fafc; }
             .sar-radio-card:has(input:checked) {
                 border-color: #60a5fa;
                 background: #eff6ff;
+                box-shadow: inset 0 0 0 1px rgba(96,165,250,.18);
             }
-            .sar-radio-card input { margin-top: 3px; }
-            .sar-radio-card span { display: grid; gap: 2px; }
+            .sar-radio-card input { margin-top: 4px; accent-color: #2563eb; }
+            .sar-radio-content { display: grid; gap: 4px; min-width: 0; }
+            .sar-radio-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
             .sar-radio-card strong { color: #1f2937; font-size: 13px; }
-            .sar-radio-card small { color: #6b7280; font-size: 11px; }
+            .sar-radio-card small { color: #64748b; font-size: 11px; line-height: 1.45; }
+            .sar-radio-card em {
+                max-width: 190px;
+                overflow: hidden;
+                padding: 2px 6px;
+                border-radius: 999px;
+                background: #e2e8f0;
+                color: #475569;
+                font-size: 10px;
+                font-style: normal;
+                line-height: 1.3;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .sar-radio-card:has(input:checked) em { background: #dbeafe; color: #1d4ed8; }
+            .sar-radio-card code {
+                display: block;
+                max-width: 100%;
+                overflow: hidden;
+                color: #64748b;
+                font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
             .sar-inline-card,
             .sar-action-confirm {
                 margin-bottom: 14px;
@@ -680,6 +845,19 @@
             .sar-inline-card p,
             .sar-action-confirm p { margin: 5px 0 8px; }
             .sar-inline-card label { display: block; margin-top: 6px; }
+            .sar-override-option {
+                display: flex !important;
+                align-items: flex-start;
+                gap: 7px;
+                padding: 8px;
+                border-radius: 8px;
+                cursor: pointer;
+            }
+            .sar-override-option:has(input:checked) { background: rgba(245,158,11,.1); }
+            .sar-override-option input { margin-top: 3px; accent-color: #d97706; }
+            .sar-override-option span { display: grid; gap: 2px; }
+            .sar-override-option b { color: #78350f; font-size: 12px; }
+            .sar-override-option small { color: #92400e; font-size: 11px; line-height: 1.4; }
             .sar-message {
                 margin-bottom: 12px;
                 padding: 9px 10px;
@@ -755,15 +933,44 @@
         return Boolean(panelEl && activeElement && panelEl.contains(activeElement));
     }
 
+    function capturePanelAnchor() {
+        if (!uiHost) return null;
+        const rect = uiHost.getBoundingClientRect();
+        const leftGap = Math.max(0, rect.left);
+        const rightGap = Math.max(0, window.innerWidth - rect.right);
+        const topGap = Math.max(0, rect.top);
+        const bottomGap = Math.max(0, window.innerHeight - rect.bottom);
+
+        return {
+            horizontal: rightGap < leftGap ? 'right' : 'left',
+            horizontalGap: Math.min(leftGap, rightGap),
+            vertical: bottomGap < topGap ? 'bottom' : 'top',
+            verticalGap: Math.min(topGap, bottomGap)
+        };
+    }
+
+    function restorePanelAnchor(anchor) {
+        if (!uiHost || !anchor) return;
+        const width = uiHost.offsetWidth;
+        const height = uiHost.offsetHeight;
+        const left = anchor.horizontal === 'right'
+            ? window.innerWidth - anchor.horizontalGap - width
+            : anchor.horizontalGap;
+        const top = anchor.vertical === 'bottom'
+            ? window.innerHeight - anchor.verticalGap - height
+            : anchor.verticalGap;
+        setPanelPosition(uiHost, left, top);
+    }
+
     function setPanelMode(mode) {
         if (!panelEl) return;
-        panelMode = mode === 'mini' ? 'mini' : 'expanded';
-        panelEl.dataset.mode = panelMode;
+        const nextMode = mode === 'mini' ? 'mini' : 'expanded';
+        if (panelMode === nextMode) return;
 
-        if (panelMode === 'expanded' && hasCustomPanelPosition && uiHost) {
-            const rect = uiHost.getBoundingClientRect();
-            setPanelPosition(uiHost, rect.left, rect.top);
-        }
+        const anchor = hasCustomPanelPosition ? capturePanelAnchor() : null;
+        panelMode = nextMode;
+        panelEl.dataset.mode = panelMode;
+        if (anchor) restorePanelAnchor(anchor);
     }
 
     function scheduleCollapse() {
@@ -820,10 +1027,6 @@
         pauseBtn.addEventListener('click', togglePause);
         resetBtn.addEventListener('click', resetCountdown);
         setBtn.addEventListener('click', () => runSafely(openSettingsDialog));
-        miniButtonEl.addEventListener('click', () => {
-            setPanelMode('expanded');
-            scheduleCollapse();
-        });
 
         const savedPos = await loadPanelPos();
         if (savedPos && Number.isFinite(savedPos.left) && Number.isFinite(savedPos.top)) {
@@ -831,24 +1034,72 @@
             setPanelPosition(uiHost, savedPos.left, savedPos.top);
         }
 
-        panelEl.addEventListener('mouseenter', () => {
-            clearCollapseTimer();
-            setPanelMode('expanded');
+        panelEl.addEventListener('mouseenter', clearCollapseTimer, true);
+        panelEl.addEventListener('mouseleave', () => {
+            if (panelMode === 'expanded') scheduleCollapse();
         }, true);
-        panelEl.addEventListener('mouseleave', scheduleCollapse, true);
-        panelEl.addEventListener('pointerdown', () => {
-            clearCollapseTimer();
-            setPanelMode('expanded');
-        }, true);
-        panelEl.addEventListener('focusin', () => {
-            clearCollapseTimer();
-            setPanelMode('expanded');
-        }, true);
+        panelEl.addEventListener('focusin', clearCollapseTimer, true);
         panelEl.addEventListener('focusout', () => {
             setTimeout(() => {
-                if (!isPanelFocused()) scheduleCollapse();
+                if (!isPanelFocused() && panelMode === 'expanded') scheduleCollapse();
             }, 0);
         }, true);
+
+        let miniGesture = null;
+        miniButtonEl.addEventListener('pointerdown', (event) => {
+            if (event.pointerType !== 'touch' && event.button !== 0) return;
+            clearCollapseTimer();
+            const rect = uiHost.getBoundingClientRect();
+            miniGesture = {
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                startY: event.clientY,
+                startLeft: rect.left,
+                startTop: rect.top,
+                dragged: false
+            };
+            miniButtonEl.setPointerCapture?.(event.pointerId);
+            event.preventDefault();
+        });
+
+        miniButtonEl.addEventListener('pointermove', (event) => {
+            if (!miniGesture || miniGesture.pointerId !== event.pointerId) return;
+            const deltaX = event.clientX - miniGesture.startX;
+            const deltaY = event.clientY - miniGesture.startY;
+            if (!miniGesture.dragged && Math.hypot(deltaX, deltaY) < MINI_DRAG_THRESHOLD_PX) return;
+
+            if (!miniGesture.dragged) {
+                miniGesture.dragged = true;
+                isDragging = true;
+                hasCustomPanelPosition = true;
+            }
+            setPanelPosition(uiHost, miniGesture.startLeft + deltaX, miniGesture.startTop + deltaY);
+        });
+
+        const finishMiniGesture = (event, cancelled = false) => {
+            if (!miniGesture || miniGesture.pointerId !== event.pointerId) return;
+            const wasDragged = miniGesture.dragged;
+            miniGesture = null;
+            miniButtonEl.releasePointerCapture?.(event.pointerId);
+
+            if (wasDragged) {
+                isDragging = false;
+                void savePanelPosition(uiHost);
+                return;
+            }
+            if (!cancelled) {
+                setPanelMode('expanded');
+                scheduleCollapse();
+            }
+        };
+
+        miniButtonEl.addEventListener('pointerup', (event) => finishMiniGesture(event, false));
+        miniButtonEl.addEventListener('pointercancel', (event) => finishMiniGesture(event, true));
+        miniButtonEl.addEventListener('click', (event) => {
+            if (event.detail !== 0) return;
+            setPanelMode('expanded');
+            scheduleCollapse();
+        });
 
         let startOffsetX = 0;
         let startOffsetY = 0;
@@ -1045,7 +1296,7 @@
         return null;
     }
 
-    function applyRuleUpdate(config, { url, host, seconds, scope, removeExactOverride = false }) {
+    function applyRuleUpdate(config, { url, host, seconds, scope, removeExactOverride = scope === 'site' }) {
         delete config.disabled[url];
 
         if (scope === 'site') {
@@ -1148,6 +1399,13 @@
 
         const value = Number(normalized);
         return isValidInterval(value) ? value : null;
+    }
+
+    function stepIntervalValue(currentValue, direction, step = 1) {
+        const current = isValidInterval(currentValue) ? currentValue : MIN_INTERVAL;
+        const normalizedDirection = direction < 0 ? -1 : 1;
+        const normalizedStep = Number.isSafeInteger(step) && step > 0 ? step : 1;
+        return Math.max(MIN_INTERVAL, current + (normalizedDirection * normalizedStep));
     }
 
     function isValidInterval(value) {

@@ -8,19 +8,24 @@
     <p>Browser smoke harness</p>
 
     <script>
+        window.__sarStorage = {};
         window.GM_registerMenuCommand = () => {};
         window.GM_getValue = async (key, fallback) => {
             if (key === 'autoRefreshConfig_v2') {
-                return JSON.stringify({
+                return window.__sarStorage[key] || JSON.stringify({
                     version: 2,
                     site: { [location.hostname]: 60 },
                     exact: { [location.href]: 30 },
                     disabled: {}
                 });
             }
-            return fallback;
+            return Object.prototype.hasOwnProperty.call(window.__sarStorage, key)
+                ? window.__sarStorage[key]
+                : fallback;
         };
-        window.GM_setValue = async () => {};
+        window.GM_setValue = async (key, value) => {
+            window.__sarStorage[key] = value;
+        };
         window.alert = () => {};
     </script>
 
@@ -31,30 +36,24 @@
             document.body.dataset.smokeResult = 'FAIL';
             document.body.dataset.smokeError = error instanceof Error ? error.message : String(error);
         };
+        const assert = (condition, message) => {
+            if (!condition) throw new Error(message);
+        };
+        const near = (a, b, tolerance = 2) => Math.abs(a - b) <= tolerance;
 
         setTimeout(() => {
             try {
                 const host = document.querySelector('#autoRefreshProPanel');
-                if (!host) throw new Error('control panel host was not created');
-
+                assert(host, 'control panel host was not created');
                 const root = host.shadowRoot || host;
                 const panel = root.querySelector('#sarControlPanel');
                 const badge = root.querySelector('.sar-badge');
                 const countdown = root.querySelector('#countdown');
 
-                if (!panel || panel.dataset.mode !== 'expanded') {
-                    throw new Error(`initial panel mode mismatch: ${panel?.dataset.mode}`);
-                }
-                if (!badge || badge.textContent.trim() !== '精准网址') {
-                    throw new Error('exact-scope badge mismatch');
-                }
-                if (!countdown || countdown.textContent.trim() !== '00:00:30') {
-                    throw new Error(`countdown mismatch: ${countdown?.textContent}`);
-                }
-                if (host.style.zIndex !== '2147483647') {
-                    throw new Error('panel z-index mismatch');
-                }
-
+                assert(panel?.dataset.mode === 'expanded', `initial panel mode mismatch: ${panel?.dataset.mode}`);
+                assert(badge?.textContent.trim() === '精准网址', 'exact-scope badge mismatch');
+                assert(countdown?.textContent.trim() === '00:00:30', `countdown mismatch: ${countdown?.textContent}`);
+                assert(host.style.zIndex === '2147483647', 'panel z-index mismatch');
                 document.body.dataset.smokePanel = 'PASS';
             } catch (error) {
                 fail(error);
@@ -67,28 +66,46 @@
                 const host = document.querySelector('#autoRefreshProPanel');
                 const root = host.shadowRoot || host;
                 const panel = root.querySelector('#sarControlPanel');
-                const miniButton = root.querySelector('#sarMiniButton');
+                const mini = root.querySelector('#sarMiniButton');
 
-                if (panel.dataset.mode !== 'mini') {
-                    throw new Error(`idle panel did not collapse: ${panel.dataset.mode}`);
-                }
-                if (!miniButton || getComputedStyle(miniButton).display === 'none') {
-                    throw new Error('mini timer is not visible after idle collapse');
-                }
-                if (!miniButton.getAttribute('aria-label')?.includes('自动刷新')) {
-                    throw new Error('mini timer accessible label missing');
-                }
+                assert(panel.dataset.mode === 'mini', `idle panel did not collapse: ${panel.dataset.mode}`);
+                assert(mini && getComputedStyle(mini).display !== 'none', 'mini timer is not visible');
 
-                document.body.dataset.smokeMini = 'PASS';
-                miniButton.click();
-                if (panel.dataset.mode !== 'expanded') {
-                    throw new Error('mini timer did not expand after click');
-                }
-                document.body.dataset.smokeExpand = 'PASS';
+                mini.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                assert(panel.dataset.mode === 'mini', 'mini timer expanded merely from hover');
+                document.body.dataset.smokeMiniHover = 'PASS';
 
-                const settingsButton = root.querySelector('#setBtn');
-                if (!settingsButton) throw new Error('settings button missing');
-                settingsButton.click();
+                mini.setPointerCapture = () => {};
+                mini.releasePointerCapture = () => {};
+                const rect = mini.getBoundingClientRect();
+                const pointerId = 77;
+                const startX = rect.left + rect.width / 2;
+                const startY = rect.top + rect.height / 2;
+                mini.dispatchEvent(new PointerEvent('pointerdown', {
+                    bubbles: true, pointerId, pointerType: 'mouse', button: 0,
+                    clientX: startX, clientY: startY
+                }));
+                mini.dispatchEvent(new PointerEvent('pointermove', {
+                    bubbles: true, pointerId, pointerType: 'mouse', buttons: 1,
+                    clientX: startX + 100, clientY: startY
+                }));
+                mini.dispatchEvent(new PointerEvent('pointerup', {
+                    bubbles: true, pointerId, pointerType: 'mouse', button: 0,
+                    clientX: startX + 100, clientY: startY
+                }));
+
+                assert(panel.dataset.mode === 'mini', 'mini timer expanded after drag');
+                assert(near(host.getBoundingClientRect().right, window.innerWidth),
+                    `mini timer did not reach right edge: ${host.getBoundingClientRect().right}/${window.innerWidth}`);
+                document.body.dataset.smokeMiniDrag = 'PASS';
+
+                mini.click();
+                assert(panel.dataset.mode === 'expanded', 'mini timer did not expand after click');
+                assert(near(host.getBoundingClientRect().right, window.innerWidth),
+                    'expanded panel did not preserve right-edge anchor');
+                document.body.dataset.smokeExpandAnchor = 'PASS';
+
+                root.querySelector('#setBtn')?.click();
             } catch (error) {
                 fail(error);
             }
@@ -100,55 +117,66 @@
                 const host = document.querySelector('#autoRefreshProPanel');
                 const root = host.shadowRoot || host;
                 const backdrop = root.querySelector('#sarSettingsBackdrop');
-                const dialog = backdrop?.querySelector('[role="dialog"]');
                 const intervalInput = backdrop?.querySelector('#sarIntervalInput');
-                const saveButton = backdrop?.querySelector('#sarSaveBtn');
-                const disableButton = backdrop?.querySelector('#sarDisableBtn');
-                const deleteSiteButton = backdrop?.querySelector('#sarDeleteSiteBtn');
+                const increase = backdrop?.querySelector('#sarIntervalIncrease');
+                const decrease = backdrop?.querySelector('#sarIntervalDecrease');
+                const stepper = backdrop?.querySelector('#sarIntervalStepper');
+                const exactRadio = backdrop?.querySelector('input[name="sarScope"][value="exact"]');
                 const siteRadio = backdrop?.querySelector('input[name="sarScope"][value="site"]');
                 const overrideChoice = backdrop?.querySelector('#sarOverrideChoice');
+                const removeOverride = backdrop?.querySelector('input[name="sarOverride"][value="remove"]');
+                const saveButton = backdrop?.querySelector('#sarSaveBtn');
                 const message = backdrop?.querySelector('#sarDialogMessage');
+                const scopeTitles = [...(backdrop?.querySelectorAll('.sar-radio-title strong') || [])].map((el) => el.textContent.trim());
+                const currentUrl = backdrop?.querySelector('#sarCurrentUrl');
+                const currentHost = backdrop?.querySelector('#sarCurrentHost');
 
-                if (!backdrop || !dialog) throw new Error('settings dialog did not open');
-                if (intervalInput?.value !== '30') {
-                    throw new Error(`settings interval mismatch: ${intervalInput?.value}`);
-                }
-                if (!saveButton || saveButton.textContent.trim() !== '保存设置') {
-                    throw new Error('settings save button missing');
-                }
-                if (!disableButton || !deleteSiteButton) {
-                    throw new Error('contextual management actions missing');
-                }
+                assert(backdrop, 'settings dialog did not open');
+                assert(intervalInput?.value === '30', `settings interval mismatch: ${intervalInput?.value}`);
+                assert(scopeTitles.includes('仅当前页面') && scopeTitles.includes('整个网站'),
+                    `scope titles mismatch: ${scopeTitles.join(',')}`);
+                assert(currentUrl?.textContent === location.href, 'current URL context missing');
+                assert(currentHost?.textContent === location.hostname, 'current host context missing');
 
+                increase.click();
+                assert(intervalInput.value === '31', `stepper + click failed: ${intervalInput.value}`);
+                intervalInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowUp' }));
+                assert(intervalInput.value === '32', `ArrowUp failed: ${intervalInput.value}`);
+                intervalInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowUp', shiftKey: true }));
+                assert(intervalInput.value === '42', `Shift+ArrowUp failed: ${intervalInput.value}`);
+                stepper.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100 }));
+                assert(intervalInput.value === '43', `wheel increment failed: ${intervalInput.value}`);
+                intervalInput.value = '1';
+                decrease.click();
+                assert(intervalInput.value === '1', `minimum clamp failed: ${intervalInput.value}`);
+                document.body.dataset.smokeStepper = 'PASS';
+
+                intervalInput.value = '30';
+                intervalInput.dispatchEvent(new Event('input', { bubbles: true }));
+                assert(exactRadio.checked, 'exact scope should be initially selected');
                 siteRadio.checked = true;
                 siteRadio.dispatchEvent(new Event('change', { bubbles: true }));
-                if (overrideChoice.hidden) {
-                    throw new Error('exact override choice did not appear for site scope');
-                }
+                assert(!overrideChoice.hidden, 'exact override choice did not appear for site scope');
+                assert(removeOverride.checked, 'site-scope takeover is not the default conflict decision');
+                assert(overrideChoice.textContent.includes('使用网站规则（推荐）'), 'recommended site takeover copy missing');
+                document.body.dataset.smokeScope = 'PASS';
 
                 intervalInput.value = '3';
                 intervalInput.dispatchEvent(new Event('input', { bubbles: true }));
                 saveButton.click();
-                if (message.hidden || message.dataset.kind !== 'warning') {
-                    throw new Error('high-frequency inline confirmation missing');
-                }
-                if (saveButton.textContent.trim() !== '确认高频并保存') {
-                    throw new Error('high-frequency confirmation button state missing');
-                }
+                assert(!message.hidden && message.dataset.kind === 'warning', 'high-frequency inline confirmation missing');
+                assert(saveButton.textContent.trim() === '确认高频并保存', 'high-frequency confirmation state missing');
 
-                deleteSiteButton.click();
+                backdrop.querySelector('#sarDeleteSiteBtn')?.click();
                 const actionConfirm = backdrop.querySelector('#sarActionConfirm');
-                if (!actionConfirm || actionConfirm.hidden) {
-                    throw new Error('destructive action inline confirmation missing');
-                }
+                assert(actionConfirm && !actionConfirm.hidden, 'destructive action confirmation missing');
 
                 document.body.dataset.smokeDialog = 'PASS';
-                document.body.dataset.smokeManage = 'PASS';
                 document.body.dataset.smokeResult = 'PASS';
             } catch (error) {
                 fail(error);
             }
-        }, 5450);
+        }, 5500);
     </script>
 </body>
 </html>

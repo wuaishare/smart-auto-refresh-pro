@@ -108,6 +108,10 @@ node --check smart-auto-refresh-pro.user.js
 
 ---
 
-### 🧑‍💻 作者
+### 🧑‍💻 作者与鸣谢
 
-本脚本由吾爱分享网（[www.wuaishare.cn](https://www.wuaishare.cn/)）提交发布，代码内容由 ChatGPT 协助优化并撰写。欢迎修改、自用、分享，无需署名。如有建议、Bug 或改进方案，欢迎通过 [GitHub Issues](https://github.com/wuaishare/smart-auto-refresh-pro/issues) 反馈，或直接提交 Pull Request 参与共创。
+本脚本由吾爱分享网（[www.wuaishare.cn](https://www.wuaishare.cn/)）维护开发。
+
+感谢 Greasy Fork 用户 [catlair](https://greasyfork.org/zh-CN/users/1612226-catlair) 发布的 [域名范围优化版](https://greasyfork.org/zh-CN/scripts/582415-%E7%BD%91%E9%A1%B5%E8%87%AA%E5%8A%A8%E5%88%B7%E6%96%B0-pro-%E5%9F%9F%E5%90%8D%E8%8C%83%E5%9B%B4%E4%BC%98%E5%8C%96%E7%89%88)，为 v1.3 的域名范围刷新功能提供了改进思路。
+
+欢迎通过 [GitHub Issues](https://github.com/wuaishare/smart-auto-refresh-pro/issues) 反馈问题，或提交 Pull Request 参与共创。

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页自动刷新 Pro
 // @namespace    https://www.wuaishare.cn/
-// @version      1.3.3
-// @description  自动刷新页面：支持专业刷新间隔 Stepper、仅当前页面/整个网站两级规则、统一设置管理、可独立拖拽并贴边的 Mini Timer、倒计时/暂停/重置；采用绝对时间计时。
+// @version      1.3.4
+// @description  自动刷新页面：支持专业刷新间隔 Stepper、仅当前页面/整个网站两级规则、统一设置管理、页面加载默认 Mini Timer、可独立拖拽贴边、倒计时/暂停/重置；采用绝对时间计时。
 // @author       吾爱分享网
 // @homepageURL  https://github.com/wuaishare/smart-auto-refresh-pro
 // @supportURL   https://github.com/wuaishare/smart-auto-refresh-pro/issues
@@ -40,7 +40,7 @@
     let uiHost = null;
     let uiRoot = null;
     let panelEl = null;
-    let panelMode = 'expanded';
+    let panelMode = 'mini';
     let collapseTimer = null;
     let isDragging = false;
     let settingsDialogOpen = false;
@@ -988,10 +988,10 @@
         const root = ensureUiSurface();
         const mount = root.querySelector('#sarMount');
         const scopeLabel = activeRule?.scope === 'site' ? '整个网站' : '仅当前页面';
-        const initialPresentation = getPanelPresentation('expanded', false, intervalSeconds);
+        const initialPresentation = getPanelPresentation('mini', false, intervalSeconds);
 
         mount.innerHTML = `
-            <div class="sar-panel" id="sarControlPanel" data-mode="expanded">
+            <div class="sar-panel" id="sarControlPanel" data-mode="mini">
                 <button class="sar-mini" id="sarMiniButton" type="button" aria-label="${initialPresentation.label}">
                     <span id="sarMiniIcon">${initialPresentation.icon}</span>
                     <strong id="sarMiniTime">${initialPresentation.time}</strong>
@@ -1152,8 +1152,7 @@
             }
         }, true);
 
-        setPanelMode('expanded');
-        scheduleCollapse();
+        setPanelMode('mini');
     }
 
     function setPanelPosition(panel, requestedLeft, requestedTop) {

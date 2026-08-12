@@ -49,11 +49,16 @@
                 const panel = root.querySelector('#sarControlPanel');
                 const badge = root.querySelector('.sar-badge');
                 const countdown = root.querySelector('#countdown');
+                const mini = root.querySelector('#sarMiniButton');
+                const expanded = root.querySelector('.sar-expanded');
 
-                assert(panel?.dataset.mode === 'expanded', `initial panel mode mismatch: ${panel?.dataset.mode}`);
+                assert(panel?.dataset.mode === 'mini', `initial panel mode mismatch: ${panel?.dataset.mode}`);
+                assert(mini && getComputedStyle(mini).display !== 'none', 'initial Mini Timer is not visible');
+                assert(expanded && getComputedStyle(expanded).display === 'none', 'expanded panel flashed on initial load');
                 assert(badge?.textContent.trim() === '仅当前页面', 'current-page scope badge mismatch');
                 assert(countdown?.textContent.trim() === '00:00:30', `countdown mismatch: ${countdown?.textContent}`);
                 assert(host.style.zIndex === '2147483647', 'panel z-index mismatch');
+                document.body.dataset.smokeQuietStart = 'PASS';
                 document.body.dataset.smokePanel = 'PASS';
             } catch (error) {
                 fail(error);
@@ -104,12 +109,28 @@
                 assert(near(host.getBoundingClientRect().right, window.innerWidth),
                     'expanded panel did not preserve right-edge anchor');
                 document.body.dataset.smokeExpandAnchor = 'PASS';
+            } catch (error) {
+                fail(error);
+            }
+        }, 150);
 
+        setTimeout(() => {
+            if (document.body.dataset.smokeResult === 'FAIL') return;
+            try {
+                const host = document.querySelector('#autoRefreshProPanel');
+                const root = host.shadowRoot || host;
+                const panel = root.querySelector('#sarControlPanel');
+                const mini = root.querySelector('#sarMiniButton');
+
+                assert(panel.dataset.mode === 'mini', `expanded panel did not return to Mini after idle: ${panel.dataset.mode}`);
+                document.body.dataset.smokeIdleReturn = 'PASS';
+                mini.click();
+                assert(panel.dataset.mode === 'expanded', 'mini timer did not expand for settings');
                 root.querySelector('#setBtn')?.click();
             } catch (error) {
                 fail(error);
             }
-        }, 5300);
+        }, 5400);
 
         setTimeout(() => {
             if (document.body.dataset.smokeResult === 'FAIL') return;

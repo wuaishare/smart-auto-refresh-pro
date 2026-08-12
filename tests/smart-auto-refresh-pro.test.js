@@ -154,12 +154,17 @@ function createRuntime(options = {}) {
     };
 }
 
-test('userscript metadata is pinned to the canonical v1.3.3 project links', () => {
-    assert.match(source, /^\/\/ @version\s+1\.3\.3$/m);
+test('userscript metadata is pinned to the canonical v1.3.4 project links', () => {
+    assert.match(source, /^\/\/ @version\s+1\.3\.4$/m);
     assert.match(source, /^\/\/ @homepageURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro$/m);
     assert.match(source, /^\/\/ @supportURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro\/issues$/m);
     assert.doesNotMatch(source, /^\/\/ @(downloadURL|updateURL)\s+/m);
     assert.doesNotMatch(source, /582415|update\.greasyfork\.org/);
+});
+
+test('enabled pages start quietly in Mini Timer mode', () => {
+    assert.match(source, /let panelMode = 'mini';/);
+    assert.match(source, /id="sarControlPanel" data-mode="mini"/);
 });
 
 test('legacy v1/v1.2 URL map migrates into v2 exact and site rules', () => {

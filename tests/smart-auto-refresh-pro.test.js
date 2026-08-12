@@ -154,8 +154,8 @@ function createRuntime(options = {}) {
     };
 }
 
-test('userscript metadata is pinned to the canonical v1.3.2 project links', () => {
-    assert.match(source, /^\/\/ @version\s+1\.3\.2$/m);
+test('userscript metadata is pinned to the canonical v1.3.3 project links', () => {
+    assert.match(source, /^\/\/ @version\s+1\.3\.3$/m);
     assert.match(source, /^\/\/ @homepageURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro$/m);
     assert.match(source, /^\/\/ @supportURL\s+https:\/\/github\.com\/wuaishare\/smart-auto-refresh-pro\/issues$/m);
     assert.doesNotMatch(source, /^\/\/ @(downloadURL|updateURL)\s+/m);

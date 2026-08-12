@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页自动刷新 Pro
 // @namespace    https://www.wuaishare.cn/
-// @version      1.3.2
-// @description  自动刷新页面：支持专业刷新间隔 Stepper、当前页/整站两级规则、统一设置管理、可独立拖拽并贴边的 Mini Timer、倒计时/暂停/重置；采用绝对时间计时。
+// @version      1.3.3
+// @description  自动刷新页面：支持专业刷新间隔 Stepper、仅当前页面/整个网站两级规则、统一设置管理、可独立拖拽并贴边的 Mini Timer、倒计时/暂停/重置；采用绝对时间计时。
 // @author       吾爱分享网
 // @homepageURL  https://github.com/wuaishare/smart-auto-refresh-pro
 // @supportURL   https://github.com/wuaishare/smart-auto-refresh-pro/issues
@@ -150,7 +150,7 @@
                         ? '<button class="sar-secondary-btn" id="sarDisableBtn" type="button">停用当前页面</button>'
                         : ''}
                     ${state.hasSiteRule
-                        ? '<button class="sar-danger-btn" id="sarDeleteSiteBtn" type="button">删除网站范围规则</button>'
+                        ? '<button class="sar-danger-btn" id="sarDeleteSiteBtn" type="button">删除网站规则</button>'
                         : ''}
                 </div>
 
@@ -405,8 +405,8 @@
         disableBtn?.addEventListener('click', () => {
             showActionConfirm(
                 state.hasSiteRule
-                    ? '确认停用当前页面？网站范围规则仍会继续作用于同站其他页面。'
-                    : '确认停用当前页面？当前精准网址规则将被删除。',
+                    ? '确认停用当前页面？整个网站的规则仍会继续作用于站内其他页面。'
+                    : '确认停用当前页面？当前页面的单独规则将被删除。',
                 async () => {
                     disableUrl(config, { url: currentUrl, host: currentHost });
                     await saveConfig(config);
@@ -417,7 +417,7 @@
 
         deleteSiteBtn?.addEventListener('click', () => {
             showActionConfirm(
-                `确认删除 ${currentHost} 的网站范围规则？该网站已有的页面排除记录也会一并清理。`,
+                `确认删除 ${currentHost} 的网站规则？该网站已有的页面排除记录也会一并清理。`,
                 async () => {
                     removeSiteRule(config, { host: currentHost });
                     await saveConfig(config);
@@ -433,13 +433,13 @@
 
     function describeSettingsStatus(state) {
         if (state.effectiveScope === 'exact') {
-            return `当前状态：精准网址 · 每 ${state.seconds} 秒刷新`;
+            return `当前状态：仅当前页面 · 每 ${state.seconds} 秒刷新`;
         }
         if (state.effectiveScope === 'site') {
-            return `当前状态：网站范围 · 每 ${state.seconds} 秒刷新`;
+            return `当前状态：整个网站 · 每 ${state.seconds} 秒刷新`;
         }
         if (state.isDisabled && state.hasSiteRule) {
-            return '当前状态：此页面已停用，网站范围规则仍存在';
+            return '当前状态：此页面已停用，整个网站的规则仍存在';
         }
         return '当前状态：未启用自动刷新';
     }
@@ -987,7 +987,7 @@
     async function createControlPanel() {
         const root = ensureUiSurface();
         const mount = root.querySelector('#sarMount');
-        const scopeLabel = activeRule?.scope === 'site' ? '网站范围' : '精准网址';
+        const scopeLabel = activeRule?.scope === 'site' ? '整个网站' : '仅当前页面';
         const initialPresentation = getPanelPresentation('expanded', false, intervalSeconds);
 
         mount.innerHTML = `

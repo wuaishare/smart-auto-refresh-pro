@@ -51,7 +51,7 @@
                 const countdown = root.querySelector('#countdown');
 
                 assert(panel?.dataset.mode === 'expanded', `initial panel mode mismatch: ${panel?.dataset.mode}`);
-                assert(badge?.textContent.trim() === '精准网址', 'exact-scope badge mismatch');
+                assert(badge?.textContent.trim() === '仅当前页面', 'current-page scope badge mismatch');
                 assert(countdown?.textContent.trim() === '00:00:30', `countdown mismatch: ${countdown?.textContent}`);
                 assert(host.style.zIndex === '2147483647', 'panel z-index mismatch');
                 document.body.dataset.smokePanel = 'PASS';
